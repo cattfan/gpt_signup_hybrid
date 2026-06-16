@@ -1,0 +1,756 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>GSH Tool</title>
+<meta name="auth-token" content="__AUTH_TOKEN__" />
+<link rel="stylesheet" href="/static/style.css?v=__ASSET_VERSION__" />
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-dot"></span>
+    <span class="brand-name">GSH</span>
+    <span class="brand-tag">Batch signup + 2FA</span>
+  </div>
+  <nav class="tab-nav">
+    <button class="tab-btn active" data-tab="reg">Reg</button>
+    <button class="tab-btn" data-tab="session">Get Session</button>
+    <button class="tab-btn" data-tab="upi">UPI QR</button>
+    <!-- TẠM ẨN: Get Link + HME chưa dùng được. Mở lại = bỏ comment 2 dòng dưới. -->
+    <!-- <button class="tab-btn" data-tab="link">Get Link</button> -->
+    <!-- <button class="tab-btn" data-tab="hme">HME</button> -->
+    <button class="tab-btn" data-tab="settings">Settings</button>
+  </nav>
+  <div class="topbar-actions">
+    <label class="select-wrap">
+      <span>Mode</span>
+      <select id="mode">
+        <option value="single">Single (1)</option>
+        <option value="multi">Multi (2)</option>
+        <option value="multi3">Multi (3)</option>
+        <option value="multi5">Multi (5)</option>
+        <option value="multi10">Multi (10)</option>
+        <option value="multi20">Multi (20)</option>
+        <option value="multi30">Multi (30)</option>
+        <option value="multi50">Multi (50)</option>
+      </select>
+    </label>
+    <label class="toggle-wrap" title="Bật để ẩn cửa sổ trình duyệt khi chạy">
+      <input type="checkbox" id="headless-toggle" checked />
+      <span class="toggle-track"><span class="toggle-thumb"></span></span>
+      <span class="toggle-label">Headless</span>
+    </label>
+    <label class="toggle-wrap" title="Giữ browser mở sau khi job xong (chỉ khi headed)">
+      <input type="checkbox" id="debug-toggle" />
+      <span class="toggle-track"><span class="toggle-thumb"></span></span>
+      <span class="toggle-label">Debug</span>
+    </label>
+    <span id="status-pill" class="pill pill-idle">idle</span>
+  </div>
+</header>
+
+<!-- ════════════════ TAB: REG ════════════════ -->
+<main class="grid tab-content active" id="tab-reg">
+  <section class="card card-input">
+    <header class="card-head">
+      <h2>Input Combos</h2>
+      <span class="muted card-head-note" id="input-hint">One combo per line: email|password|refresh_token|client_id</span>
+    </header>
+    <!-- Mail Mode + Worker config: 1 row, label trên / control dưới -->
+    <div class="mail-mode-row">
+      <label class="input-group config-field-mode">
+        <span class="input-label">Mail Mode</span>
+        <select id="mail-mode-select"></select>
+      </label>
+      <label class="input-group config-field-mode">
+        <span class="input-label">Reg Mode</span>
+        <select id="reg-mode-select">
+          <option value="pure_request">Pure Request (HTTP only)</option>
+          <option value="browser">Browser (anti-detect)</option>
+        </select>
+      </label>
+      <div id="mail-mode-config-host" class="mail-mode-config-host"></div>
+    </div>
+    <textarea class="combo-textarea" id="combo-input" placeholder="email1@hotmail.com|pwd1|M.C548...|9e5f94bc-...&#10;email2@outlook.com|pwd2|M.C525...|9e5f94bc-..."></textarea>
+    <div class="card-settings">
+      <div class="card-settings-row card-settings-row-mixed">
+        <label class="input-group config-field-long">
+          <span class="input-label">Default password</span>
+          <input type="text" id="default-password" placeholder="Leave blank for random" autocomplete="off" spellcheck="false" />
+        </label>
+        <label class="input-group config-field-short">
+          <span class="input-label">Timeout (s/job)</span>
+          <input type="number" id="job-timeout" value="240" min="30" max="600" step="10" />
+        </label>
+        <span class="settings-divider" aria-hidden="true"></span>
+        <label class="toggle-wrap" title="Fetch session JSON after signup + 2FA finishes">
+          <input type="checkbox" id="post-reg-session-toggle" />
+          <span class="toggle-track"><span class="toggle-thumb"></span></span>
+          <span class="toggle-label">Fetch Session</span>
+        </label>
+        <label class="toggle-wrap" title="Fetch payment link after signup + 2FA finishes">
+          <input type="checkbox" id="post-reg-link-toggle" />
+          <span class="toggle-track"><span class="toggle-thumb"></span></span>
+          <span class="toggle-label">Fetch Link</span>
+        </label>
+        <label class="input-group config-field-short" title="Region cho payment link (chỉ áp dụng khi Fetch Link bật)">
+          <span class="input-label">Link Region</span>
+          <select id="post-reg-link-region">
+            <option value="VN">VN</option>
+            <option value="ID">ID</option>
+            <option value="IN">IN</option>
+            <option value="US">US</option>
+          </select>
+        </label>
+      </div>
+    </div>
+    <div class="card-actions">
+      <button id="btn-run" class="btn btn-primary">Run</button>
+      <button id="btn-stop-all" class="btn btn-danger">Stop All</button>
+      <button id="btn-clear-input" class="btn btn-ghost">Clear Input</button>
+      <span class="muted" id="combo-count">0 combos</span>
+    </div>
+  </section>
+
+  <section class="card card-jobs">
+    <header class="card-head">
+      <h2>Jobs</h2>
+      <div class="card-head-actions">
+        <label class="input-group config-field-tiny" title="Số lần retry khi job bị error (0 = không retry)">
+          <span class="input-label">Retry</span>
+          <input type="number" id="auto-retry-max" value="0" min="0" max="10" step="1" />
+        </label>
+        <button id="btn-retry-failed" class="btn btn-ghost btn-small" title="Retry all error & cancelled jobs">Retry Failed</button>
+        <button id="btn-clear-done" class="btn btn-ghost btn-small" title="Remove finished jobs from memory">Clear Done</button>
+        <button id="btn-clear-all" class="btn btn-ghost btn-small" title="Remove ALL jobs (all statuses)">Clear All</button>
+        <span class="muted" id="job-summary">0 total</span>
+      </div>
+    </header>
+    <div id="job-list" class="job-list">
+      <div class="empty">No jobs yet. Paste combos and click Run.</div>
+    </div>
+  </section>
+
+  <section class="card card-log">
+    <header class="card-head">
+      <h2>Log</h2>
+      <span class="muted" id="log-target">-</span>
+    </header>
+    <pre id="log-pane" class="log-pane"></pre>
+  </section>
+
+  <section class="card card-success">
+    <header class="card-head">
+      <h2>Success output</h2>
+      <button id="btn-copy-success" class="btn btn-ghost btn-small">Copy All</button>
+    </header>
+    <pre id="success-pane" class="output-pane">Format: email|password|secret_2fa</pre>
+  </section>
+
+  <section class="card card-error">
+    <header class="card-head">
+      <h2>Error output</h2>
+      <button id="btn-copy-error" class="btn btn-ghost btn-small">Copy All</button>
+    </header>
+    <pre id="error-pane" class="output-pane">No errors yet.</pre>
+  </section>
+</main>
+
+<!-- ════════════════ TAB: GET SESSION ════════════════ -->
+<main class="grid tab-content" id="tab-session">
+  <section class="card card-input">
+    <header class="card-head">
+      <h2>Input</h2>
+    </header>
+    <textarea class="combo-textarea" id="ses-combo-input" placeholder="email@hotmail.com|password123|DNPARKKMM5EYOPDG...&#10;email2@hotmail.com|pass456|I77PEBZQNEBE67SU..."></textarea>
+    <div class="card-settings">
+      <label class="input-group settings-field-compact">
+        <span class="input-label">Timeout (s/job)</span>
+        <input type="number" id="ses-job-timeout" value="120" min="30" max="600" step="10" />
+      </label>
+    </div>
+    <div class="card-actions">
+      <button id="ses-btn-run" class="btn btn-primary">Get Session</button>
+      <button id="ses-btn-stop-all" class="btn btn-danger">Stop All</button>
+      <button id="ses-btn-clear-input" class="btn btn-ghost">Clear Input</button>
+      <span class="muted" id="ses-combo-count">0 combos</span>
+    </div>
+  </section>
+
+  <section class="card card-jobs">
+    <header class="card-head">
+      <h2>Jobs</h2>
+      <div class="card-head-actions">
+        <button id="ses-btn-clear-done" class="btn btn-ghost btn-small">Clear Done</button>
+        <span class="muted" id="ses-job-summary">0 total</span>
+      </div>
+    </header>
+    <div id="ses-job-list" class="job-list">
+      <div class="empty">Paste combos and click Get Session.</div>
+    </div>
+  </section>
+
+  <section class="card card-log">
+    <header class="card-head">
+      <h2>Log</h2>
+      <span class="muted" id="ses-log-target">-</span>
+    </header>
+    <pre id="ses-log-pane" class="log-pane"></pre>
+  </section>
+
+  <section class="card card-error card-span-full">
+    <header class="card-head">
+      <h2>Error output</h2>
+      <button id="ses-btn-copy-error" class="btn btn-ghost btn-small">Copy All</button>
+    </header>
+    <pre id="ses-error-pane" class="output-pane">No errors yet.</pre>
+  </section>
+</main>
+
+<!-- ════════════════ TAB: UPI QR ════════════════ -->
+<main class="grid tab-content" id="tab-upi">
+  <section class="card card-input">
+    <header class="card-head">
+      <h2>Input</h2>
+      <span class="muted card-head-note">Một dòng 1 account: <code>email|password|secret_2fa</code></span>
+    </header>
+    <textarea class="combo-textarea" id="upi-combo-input" placeholder="email1@nik.edu.pl|GPT#xxx|TOTP_SECRET&#10;email2@nik.edu.pl|GPT#yyy|TOTP_SECRET"></textarea>
+    <div class="card-settings">
+      <div class="card-settings-row card-settings-row-mixed">
+        <label class="input-group config-field-short" title="Số lần retry POST /backend-api/payments/checkout/approve">
+          <span class="input-label">Approve retries</span>
+          <input type="number" id="upi-approve-retries" value="500" min="1" max="2000" step="1" />
+        </label>
+        <label class="input-group config-field-short" title="Timeout cho mỗi job (giây)">
+          <span class="input-label">Timeout (s/job)</span>
+          <input type="number" id="upi-job-timeout" value="1800" min="60" max="7200" step="60" />
+        </label>
+        <span class="settings-divider" aria-hidden="true"></span>
+        <span class="muted upi-fixed-note" title="Các biến này fix cứng trong code">
+          fixed: PROMO=1 · PROXY_FROM_STEP=3 · QR_CONFIRM=1 · QR_APPROVE=1 · APPROVE_DELAY=3s · VARIANTS=qr_code,empty,flow_qr,intent
+        </span>
+      </div>
+    </div>
+    <div class="card-actions">
+      <button id="upi-btn-run" class="btn btn-primary">Get UPI QR</button>
+      <button id="upi-btn-stop-all" class="btn btn-danger">Stop All</button>
+      <button id="upi-btn-clear-input" class="btn btn-ghost">Clear Input</button>
+      <span class="muted" id="upi-combo-count">0 combos</span>
+    </div>
+  </section>
+
+  <section class="card card-jobs">
+    <header class="card-head">
+      <h2>Jobs</h2>
+      <div class="card-head-actions">
+        <button id="upi-btn-clear-done" class="btn btn-ghost btn-small">Clear Done</button>
+        <span class="muted" id="upi-job-summary">0 total</span>
+      </div>
+    </header>
+    <div id="upi-job-list" class="job-list">
+      <div class="empty">Paste accounts and click Get UPI QR.</div>
+    </div>
+  </section>
+
+  <section class="card card-log">
+    <header class="card-head">
+      <h2>Log</h2>
+      <span class="muted" id="upi-log-target">-</span>
+    </header>
+    <pre id="upi-log-pane" class="log-pane"></pre>
+  </section>
+
+  <section class="card card-error card-span-full">
+    <header class="card-head">
+      <h2>Error output</h2>
+      <button id="upi-btn-copy-error" class="btn btn-ghost btn-small">Copy All</button>
+    </header>
+    <pre id="upi-error-pane" class="output-pane">No errors yet.</pre>
+  </section>
+</main>
+
+<!-- ════════════════ TAB: GET LINK ════════════════ -->
+<main class="grid tab-content" id="tab-link">
+  <section class="card card-input">
+    <header class="card-head">
+      <h2>Input</h2>
+      <div class="link-mode-tabs">
+        <button class="link-mode-btn active" data-mode="combo">Combo</button>
+        <button class="link-mode-btn" data-mode="session_json">Session JSON</button>
+        <button class="link-mode-btn" data-mode="access_token">Access Token</button>
+      </div>
+    </header>
+    <textarea class="combo-textarea" id="link-combo-input" placeholder="email@hotmail.com|password123|DNPARKKMM5EYOPDG...&#10;email2@outlook.com|pass456|I77PEBZQNEBE67SU..." maxlength="50000"></textarea>
+    <div class="card-settings">
+      <div class="card-settings-row card-settings-row-mixed">
+        <label class="input-group config-field-short">
+          <span class="input-label">Region</span>
+          <select id="link-region-select">
+            <option value="VN">Vietnam (VND)</option>
+            <option value="ID">Indonesia (IDR)</option>
+            <option value="IN">India (INR)</option>
+            <option value="US">US (USD)</option>
+          </select>
+        </label>
+        <label class="input-group settings-field-compact">
+          <span class="input-label">Timeout (s/job)</span>
+          <input type="number" id="link-job-timeout" value="180" min="30" max="600" step="10" />
+        </label>
+      </div>
+    </div>
+    <div class="card-actions">
+      <button id="link-btn-run" class="btn btn-primary">Get Link</button>
+      <button id="link-btn-stop-all" class="btn btn-danger">Stop All</button>
+      <button id="link-btn-clear-input" class="btn btn-ghost">Clear Input</button>
+      <span class="muted" id="link-combo-count">0 combos</span>
+    </div>
+  </section>
+
+  <section class="card card-jobs">
+    <header class="card-head">
+      <h2>Jobs</h2>
+      <div class="card-head-actions">
+        <button id="link-btn-clear-done" class="btn btn-ghost btn-small">Clear Done</button>
+        <span class="muted" id="link-job-summary">0 total</span>
+      </div>
+    </header>
+    <div id="link-job-list" class="job-list">
+      <div class="empty">Paste combos and click Get Link.</div>
+    </div>
+  </section>
+
+  <section class="card card-log">
+    <header class="card-head">
+      <h2>Log</h2>
+      <span class="muted" id="link-log-target">-</span>
+    </header>
+    <pre id="link-log-pane" class="log-pane"></pre>
+  </section>
+
+  <section class="card card-error card-span-full">
+    <header class="card-head">
+      <h2>Error output</h2>
+      <button id="link-btn-copy-error" class="btn btn-ghost btn-small">Copy All</button>
+    </header>
+    <pre id="link-error-pane" class="output-pane">No errors yet.</pre>
+  </section>
+</main>
+
+<!-- ════════════════ TAB: HME (icloud-hme-pool, R10 + R14) ════════════════ -->
+<main class="grid tab-content hme-grid" id="tab-hme">
+  <!-- Hàng 1: Profiles (trái) | Jobs (phải) — hiển thị đồng thời -->
+  <!-- Sub-page: Profiles sidebar (icloud-runner-loop task 6.3, R13.5) -->
+  <!-- Operations column (~42% width) thay cho table cũ. Mỗi profile render
+       dạng card với apple_id + badge status + quota bar (hme_count/700).
+       Auto-refresh 30s + lắng nghe LogEvent có payload.apple_id để refresh
+       sớm khi pool transition (active ↔ limited ↔ quota_full ↔ session_expired). -->
+  <section class="card hme-panel hme-panel-profiles" id="hme-page-profiles">
+    <header class="card-head">
+      <h2>Profiles</h2>
+      <div class="card-head-actions">
+        <select id="hme-profile-status-filter" class="hme-select-sm">
+          <option value="">All</option>
+          <option value="active">active</option>
+          <option value="limited">limited</option>
+          <option value="quota_full">quota_full</option>
+          <option value="session_expired">session_expired</option>
+          <option value="disabled">disabled</option>
+          <option value="deleted">deleted</option>
+        </select>
+        <button id="hme-btn-refresh-profiles" class="btn btn-ghost btn-small" title="Refresh profiles">Refresh</button>
+        <button id="hme-btn-pool-status" class="btn btn-ghost btn-small" title="Pool status">Pool</button>
+        <button id="hme-btn-add-profile" class="btn btn-primary btn-small hme-btn-add"
+                title="Add profile (R14): open Camoufox, login, then save/cancel">
+          Add
+        </button>
+      </div>
+    </header>
+    <div id="hme-pool-status-summary" class="muted hme-pool-summary"></div>
+    <div id="hme-profiles-runner-indicator" class="hme-runner-indicator">
+      <span id="hme-profiles-runner-dot" class="runner-dot runner-dot-idle"></span>
+      <span id="hme-profiles-runner-text" class="muted">Idle</span>
+      <button id="hme-btn-privacy" type="button" class="btn btn-ghost btn-small hme-btn-privacy"
+              title="Ẩn/Hiện email + apple_id (chống lộ khi chụp screenshot)">Ẩn</button>
+    </div>
+    <div class="hme-panel-body hme-profile-list-wrap">
+      <div id="hme-profiles-list" class="hme-profile-list">
+        <div class="muted hme-profile-empty">Loading...</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Sub-page: Run Log (icloud-runner-loop task 6.1, R13.1, R13.6) -->
+  <!-- Thay panel Jobs cũ (job list + filter + stop-all + job detail modal)
+       bằng log viewer real-time stream từ HmeRunner. Stream qua
+       GET /api/icloud/run/log/stream (SSE) — auth bằng ?token=<token>
+       query param vì EventSource không cho set header tùy chỉnh. -->
+  <section class="card hme-panel hme-panel-runlog" id="hme-page-runlog">
+    <header class="card-head hme-runner-head">
+      <div class="hme-runner-header-controls" aria-label="Runner controls">
+        <button id="hme-btn-runner-start" class="btn btn-primary btn-small">Start</button>
+        <button id="hme-btn-runner-stop" class="btn btn-danger btn-small" disabled>Stop</button>
+      </div>
+      <div class="card-head-actions">
+        <span id="hme-runner-status-badge" class="badge badge-muted" title="Trạng thái HmeRunner">IDLE</span>
+        <span id="hme-log-stream-status" class="muted hme-log-status" title="EventSource state">disconnected</span>
+        <button id="hme-btn-clear-log" class="btn btn-ghost btn-small" title="Clear viewer (chỉ xoá DOM, không reset buffer server)">Clear</button>
+      </div>
+    </header>
+    <!-- Runner controls (task 6.2 — R13.2, R13.3, R13.4):
+         form chọn action + params, nút Start/Stop, stats live cập nhật từ
+         GET /api/icloud/run/status (poll 2s). -->
+    <div class="hme-runner-controls">
+      <div class="hme-runner-form">
+        <label class="input-group">
+          <span class="input-label">Action</span>
+          <select id="hme-runner-action" class="hme-select-sm">
+            <option value="generate">generate</option>
+            <option value="check_all">check_all</option>
+          </select>
+        </label>
+        <label class="input-group">
+          <span class="input-label">Count / profile</span>
+          <input type="number" id="hme-runner-count-per-cycle" class="hme-input-sm"
+                 min="1" placeholder="drain" title="Số email tối đa mỗi profile mỗi cycle. Để trống = drain tới khi profile hết slot." />
+        </label>
+        <label class="input-group">
+          <span class="input-label">Retry interval (s)</span>
+          <input type="number" id="hme-runner-retry-interval" class="hme-input-sm"
+                 min="10" placeholder="900" />
+        </label>
+        <label class="input-group">
+          <span class="input-label">Label</span>
+          <input type="text" id="hme-runner-label" class="hme-input-sm"
+                 placeholder="optional" autocomplete="off" />
+        </label>
+        <label class="input-group">
+          <span class="input-label">Note</span>
+          <input type="text" id="hme-runner-note" class="hme-input-sm"
+                 placeholder="optional" autocomplete="off" />
+        </label>
+      </div>
+      <div id="hme-runner-stats" class="hme-runner-stats muted">
+        Cycle <span id="hme-runner-stats-cycle">#0</span>
+        | Created: <span id="hme-runner-stats-created">0</span>
+        | Errors: <span id="hme-runner-stats-errors">0</span>
+        | Skipped: <span id="hme-runner-stats-skipped">0</span>
+        <span
+          id="hme-runner-next-cycle-countdown"
+          class="hme-runner-countdown"
+          style="display:none;"
+          title="Thời gian còn lại tới cycle kế tiếp (R13.7)"
+        ></span>
+      </div>
+    </div>
+    <pre id="hme-log-pane" class="log-pane hme-log-pane"></pre>
+  </section>
+
+  <!-- Hàng 2: Emails (full-width) -->
+  <!-- Sub-page: Emails (R10.5, R10.15) -->
+  <section class="card hme-panel hme-panel-emails" id="hme-page-emails">
+    <header class="card-head">
+      <h2>Emails</h2>
+      <div class="card-head-actions">
+        <select id="hme-email-status-filter" class="hme-select-sm">
+          <option value="">All status</option>
+          <option value="created">created</option>
+          <option value="reconciled">reconciled</option>
+          <option value="deactivated">deactivated</option>
+          <option value="deleted">deleted</option>
+          <option value="disabled">disabled</option>
+          <option value="used_for_chatgpt">used_for_chatgpt</option>
+        </select>
+        <input type="text" id="hme-email-apple-id-filter" placeholder="apple_id..." class="hme-input-sm" />
+        <input type="text" id="hme-email-label-filter" placeholder="label..." class="hme-input-sm" />
+        <button id="hme-btn-refresh-emails" class="btn btn-ghost btn-small" title="Refresh">Refresh</button>
+      </div>
+    </header>
+    <div class="table-wrap hme-panel-body">
+      <table class="hme-table">
+        <thead>
+          <tr>
+            <th><input type="checkbox" id="hme-email-select-all" /></th>
+            <th>email</th>
+            <th>apple_id</th>
+            <th>status</th>
+            <th>label</th>
+            <th>created_at</th>
+            <th>action</th>
+          </tr>
+        </thead>
+        <tbody id="hme-emails-tbody">
+          <tr><td colspan="7" class="muted">Click Refresh to load.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div id="hme-bulk-actions" class="hme-bulk-bar" style="display:none;">
+      <span class="muted" id="hme-bulk-count">0 selected</span>
+      <button class="btn btn-ghost btn-small" data-action="deactivate">Deactivate</button>
+      <button class="btn btn-ghost btn-small" data-action="reactivate">Reactivate</button>
+      <button class="btn btn-ghost btn-small" data-action="delete">Delete</button>
+      <label class="toggle-wrap">
+        <input type="checkbox" id="hme-bulk-dry-run" />
+        <span class="toggle-label">Dry run</span>
+      </label>
+    </div>
+    <div id="hme-email-pagination" class="hme-pagination"></div>
+  </section>
+
+  <!-- ── Sub-panel: Auto Reg GPT (auto-reg-gpt) ── -->
+  <section class="card hme-panel hme-panel-autoreg" id="hme-page-autoreg">
+    <header class="card-head autoreg-head">
+      <h2>Auto Reg GPT</h2>
+      <div class="autoreg-head-controls">
+        <label class="autoreg-inline-label">Workers <input type="number" id="autoreg-concurrency" class="hme-input-sm" value="1" min="1" max="5" step="1" style="width:60px;" title="Concurrency (1-5)" /></label>
+        <label class="autoreg-inline-label">Poll(s) <input type="number" id="autoreg-poll-interval" class="hme-input-sm" value="30" min="10" step="5" style="width:64px;" title="Poll interval (s)" /></label>
+        <button id="autoreg-toggle" class="btn btn-primary btn-small">Start</button>
+        <span id="autoreg-status-badge" class="badge badge-muted">IDLE</span>
+        <button id="autoreg-copy-output" class="btn btn-ghost btn-small" title="Copy output">Copy</button>
+      </div>
+    </header>
+    <pre id="autoreg-output-pane" class="log-pane autoreg-output-pane">Output: email|password|secret_2fa</pre>
+    <div class="autoreg-stats muted">
+      Cycle <span id="autoreg-stats-cycle">#0</span>
+      | Processed: <span id="autoreg-stats-processed">0</span>
+      | Success: <span id="autoreg-stats-success">0</span>
+      | Errors: <span id="autoreg-stats-errors">0</span>
+    </div>
+  </section>
+</main>
+
+<!-- ════════════════ TAB: SETTINGS ════════════════ -->
+<main class="tab-content settings-layout" id="tab-settings">
+  <!-- Sidebar dọc: danh sách nhóm cấu hình -->
+  <aside class="settings-sidebar" role="tablist" aria-label="Settings sections">
+    <button class="settings-nav-item active" data-settings-section="proxies" role="tab" aria-selected="true">
+      <span class="settings-nav-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+      </span>
+      <span class="settings-nav-label">Proxies</span>
+    </button>
+  </aside>
+
+  <!-- Content pane -->
+  <div class="settings-content">
+    <!-- ── Section: Proxies ── -->
+    <section class="card settings-section active" id="settings-section-proxies" data-settings-pane="proxies">
+      <header class="card-head">
+        <h2>Proxies</h2>
+        <div class="card-head-actions">
+          <label class="input-group config-field-tiny" title="Cách chọn proxy mỗi lần chạy">
+            <span class="input-label">Rotation</span>
+            <select id="proxy-pool-mode" class="hme-select-sm">
+              <option value="round_robin">Round-robin</option>
+              <option value="random">Random</option>
+            </select>
+          </label>
+          <span id="proxy-pool-summary" class="badge badge-muted" title="Tổng / live / dead">0 proxy</span>
+        </div>
+      </header>
+
+      <div class="settings-section-body">
+        <p class="settings-hint muted">
+          Mỗi dòng 1 proxy: <code>http://user:pass@host:port</code>. Khi chạy, tool xoay vòng (round-robin) hoặc chọn ngẫu nhiên (random) để tránh trùng IP. Proxy lỗi network sẽ tự bị loại khỏi vòng xoay. Để trống = chạy direct (không proxy).
+        </p>
+
+        <!-- Repeater rows -->
+        <div id="proxy-pool-rows" class="proxy-pool-rows"></div>
+
+        <div class="proxy-pool-toolbar">
+          <button id="proxy-pool-add" class="btn btn-ghost btn-small" type="button">+ Thêm proxy</button>
+          <button id="proxy-pool-paste" class="btn btn-ghost btn-small" type="button" title="Dán nhiều proxy (mỗi dòng 1)">Dán hàng loạt</button>
+          <span class="settings-toolbar-spacer"></span>
+          <button id="proxy-pool-test-all" class="btn btn-ghost btn-small" type="button">Test All</button>
+          <button id="proxy-pool-save" class="btn btn-primary btn-small" type="button">Lưu</button>
+        </div>
+
+        <div id="proxy-pool-status" class="proxy-pool-status muted"></div>
+      </div>
+    </section>
+  </div>
+</main>
+
+<!-- Bulk-paste proxy dialog -->
+<div id="proxy-paste-modal" class="modal" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="proxy-paste-title">
+  <div class="modal-content modal-content-md">
+    <header class="modal-head">
+      <h3 id="proxy-paste-title">Dán nhiều proxy</h3>
+      <button id="proxy-paste-close" class="btn-icon" aria-label="Close" title="Đóng">×</button>
+    </header>
+    <div class="modal-body">
+      <p class="muted">Mỗi dòng 1 proxy. Dòng trùng sẽ tự bỏ qua.</p>
+      <textarea id="proxy-paste-textarea" class="combo-textarea proxy-paste-textarea"
+        placeholder="http://user:pass@host:port&#10;http://user2:pass2@host2:port2"
+        spellcheck="false"></textarea>
+    </div>
+    <footer class="modal-foot">
+      <button id="proxy-paste-cancel" class="btn btn-ghost">Huỷ</button>
+      <button id="proxy-paste-apply" class="btn btn-primary">Thêm vào danh sách</button>
+    </footer>
+  </div>
+</div>
+
+<!-- HME feedback / confirm dialog -->
+<div id="hme-feedback-modal" class="modal hme-feedback-modal" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="hme-feedback-title">
+  <div class="modal-content modal-content-sm">
+    <header class="modal-head">
+      <h3 id="hme-feedback-title">Thông báo</h3>
+      <button id="hme-feedback-close" class="btn-icon" aria-label="Close" title="Đóng">×</button>
+    </header>
+    <div class="modal-body">
+      <p id="hme-feedback-message" class="hme-feedback-message"></p>
+      <pre id="hme-feedback-detail" class="hme-feedback-detail" style="display:none;"></pre>
+    </div>
+    <footer class="modal-foot hme-feedback-actions" id="hme-feedback-actions"></footer>
+  </div>
+</div>
+
+<!-- HME Add Profile dialog (R14) -->
+<div id="hme-add-profile-modal" class="modal" style="display:none;">
+  <div class="modal-content modal-content-md">
+    <header class="modal-head">
+      <h3>Đang ghi profile mới</h3>
+      <button id="hme-add-modal-close" class="btn-icon" aria-label="Close" title="Đóng (vẫn giữ session chạy nền)">×</button>
+    </header>
+    <div class="modal-body">
+      <div id="hme-add-instructions" class="hme-add-instructions">
+        <ol>
+          <li>Camoufox đã mở. <strong>Login Apple ID + nhập 2FA</strong> tay.</li>
+          <li>Đợi tới khi vào được iCloud webapp (Mail / Settings / Drive).</li>
+          <li>Nhập <strong>Apple ID</strong> bên dưới rồi bấm <strong>Lưu</strong> để chốt profile, hoặc <strong>Huỷ</strong> để đóng browser + xoá profile đang ghi.</li>
+        </ol>
+      </div>
+      <label class="hme-add-input-row">
+        <span>Apple ID (email)</span>
+        <input
+          type="email"
+          id="hme-add-apple-id"
+          placeholder="vd: user@icloud.com"
+          autocomplete="off"
+          spellcheck="false"
+        />
+        <small class="muted">
+          Tự nhập email Apple ID đã login trong Camoufox. Bỏ trống → tool thử auto-extract (best-effort, có thể fail).
+        </small>
+      </label>
+      <div class="hme-add-status">
+        <div class="hme-add-status-row">
+          <span class="muted">Session ID:</span>
+          <code id="hme-add-session-id">-</code>
+        </div>
+        <div class="hme-add-status-row">
+          <span class="muted">State:</span>
+          <span id="hme-add-state-badge"><span class="badge badge-muted">-</span></span>
+        </div>
+        <div class="hme-add-status-row">
+          <span class="muted">Đã chạy:</span>
+          <span id="hme-add-duration">0s</span>
+          <span class="muted hme-add-timeout-hint" id="hme-add-timeout-hint"></span>
+        </div>
+        <div class="hme-add-status-row hme-add-error-row" id="hme-add-error-row" style="display:none;">
+          <span class="muted">Lỗi:</span>
+          <span id="hme-add-error-text" class="hme-add-error-text"></span>
+        </div>
+      </div>
+    </div>
+    <footer class="modal-foot">
+      <button id="hme-add-cancel-btn" class="btn btn-ghost">Huỷ</button>
+      <button id="hme-add-save-btn" class="btn btn-primary" disabled>Lưu</button>
+    </footer>
+  </div>
+</div>
+
+<!-- HME Open Profile dialog (R15) -->
+<div id="hme-open-profile-modal" class="modal" style="display:none;">
+  <div class="modal-content modal-content-md">
+    <header class="modal-head">
+      <h3 id="hme-open-modal-title">Đang mở profile</h3>
+      <button id="hme-open-modal-close" class="btn-icon" aria-label="Close" title="Đóng dialog (vẫn giữ session chạy nền)">×</button>
+    </header>
+    <div class="modal-body">
+      <div class="hme-add-instructions">
+        <ol>
+          <li>Camoufox đã mở profile của bạn. <strong>Kiểm tra trạng thái session</strong> trên iCloud bằng mắt.</li>
+          <li>Nếu Apple yêu cầu <strong>login lại / 2FA</strong>, hãy hoàn tất tay trong cửa sổ Camoufox.</li>
+          <li>Khi xong:
+            <ul>
+              <li><strong>Lưu</strong> → verify cookies + reactivate profile (nếu đang <code>session_expired</code>/<code>limited</code>/<code>quota_full</code>/<code>disabled</code>).</li>
+              <li><strong>Đóng</strong> → đóng browser, KHÔNG đổi DB (chỉ xem).</li>
+            </ul>
+          </li>
+        </ol>
+      </div>
+      <div class="hme-add-status">
+        <div class="hme-add-status-row">
+          <span class="muted">Apple ID:</span>
+          <code id="hme-open-apple-id">-</code>
+        </div>
+        <div class="hme-add-status-row">
+          <span class="muted">Session ID:</span>
+          <code id="hme-open-session-id">-</code>
+        </div>
+        <div class="hme-add-status-row">
+          <span class="muted">State:</span>
+          <span id="hme-open-state-badge"><span class="badge badge-muted">-</span></span>
+        </div>
+        <div class="hme-add-status-row">
+          <span class="muted">Status DB:</span>
+          <span id="hme-open-previous-status" class="muted">-</span>
+        </div>
+        <div class="hme-add-status-row">
+          <span class="muted">Đã chạy:</span>
+          <span id="hme-open-duration">0s</span>
+        </div>
+        <div class="hme-add-status-row hme-add-error-row" id="hme-open-error-row" style="display:none;">
+          <span class="muted">Lỗi:</span>
+          <span id="hme-open-error-text" class="hme-add-error-text"></span>
+        </div>
+      </div>
+    </div>
+    <footer class="modal-foot">
+      <button id="hme-open-close-btn" class="btn btn-ghost">Đóng</button>
+      <button id="hme-open-save-btn" class="btn btn-primary" disabled>Lưu</button>
+    </footer>
+  </div>
+</div>
+
+<!-- UPI QR view modal -->
+<div id="upi-qr-modal" class="modal" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="upi-qr-modal-title">
+  <div class="modal-content modal-content-md upi-qr-modal-content">
+    <header class="modal-head">
+      <h3 id="upi-qr-modal-title">UPI QR</h3>
+      <button id="upi-qr-modal-close" class="btn-icon" aria-label="Close" title="Đóng">×</button>
+    </header>
+    <div class="modal-body upi-qr-modal-body">
+      <div class="upi-qr-modal-image-wrap">
+        <img id="upi-qr-modal-img" alt="UPI QR" />
+      </div>
+      <div class="upi-qr-modal-meta">
+        <div class="upi-qr-modal-row"><span class="muted">Email:</span> <code id="upi-qr-modal-email">-</code></div>
+        <div class="upi-qr-modal-row"><span class="muted">Amount:</span> <span id="upi-qr-modal-amount">-</span></div>
+        <div class="upi-qr-modal-row"><span class="muted">Source:</span> <span id="upi-qr-modal-source">-</span></div>
+        <div class="upi-qr-modal-row"><span class="muted">Checkout:</span> <code id="upi-qr-modal-cs">-</code></div>
+      </div>
+    </div>
+    <footer class="modal-foot">
+      <button id="upi-qr-modal-copy-url" class="btn btn-ghost" type="button">Copy checkout URL</button>
+      <button id="upi-qr-modal-download" class="btn btn-ghost" type="button">Download PNG</button>
+      <button id="upi-qr-modal-open" class="btn btn-ghost" type="button">Mở tab mới</button>
+      <button id="upi-qr-modal-ok" class="btn btn-primary" type="button">Đóng</button>
+    </footer>
+  </div>
+</div>
+
+<script src="/static/dialog.js?v=__ASSET_VERSION__"></script>
+<script src="/static/settings.js?v=__ASSET_VERSION__"></script>
+<script src="/static/app.js?v=__ASSET_VERSION__"></script>
+<script src="/static/session.js?v=__ASSET_VERSION__"></script>
+<script src="/static/link.js?v=__ASSET_VERSION__"></script>
+<script src="/static/hme.js?v=__ASSET_VERSION__"></script>
+<script src="/static/autoreg.js?v=__ASSET_VERSION__"></script>
+<script src="/static/upi.js?v=__ASSET_VERSION__"></script>
+<script src="/static/settings_panel.js?v=__ASSET_VERSION__"></script>
+</body>
+</html>
