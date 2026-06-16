@@ -1,250 +1,311 @@
 # gpt_signup_hybrid
 
-Tool tự động đăng ký ChatGPT + bật 2FA + lấy session/payment link.
+Tự động hoá vòng đời tài khoản ChatGPT: **đăng ký hàng loạt → bật 2FA → lấy session → lấy QR/link thanh toán**, điều khiển qua Web UI cục bộ hoặc CLI.
 
-## Kiến trúc tổng quan
-
-```
-gpt_signup_hybrid/
-├── Python Backend (FastAPI + Camoufox + curl_cffi)
-│   ├── Web UI: http://127.0.0.1:8083
-│   ├── 3 tab: Reg | Get Session | Get Link
-│   └── iCloud HME pool management
-├── gopay-link-service/ (Rust — Axum)
-│   └── Standalone service lấy GoPay/Midtrans payment link
-└── gopay-checker-extension/ (Chrome Extension MV3)
-    └── Check GoPay phone registration via Midtrans API
-```
-
-## Stack
-
-| Component | Tech |
-|-----------|------|
-| Backend | Python 3.13, FastAPI, Camoufox (Firefox stealth), curl_cffi, Playwright |
-| Database | SQLite (single file `runtime/data.db`) |
-| Payment Link Service | Rust, Axum, reqwest, tokio |
-| Browser Extension | Chrome Manifest V3, Service Worker |
-
-## Docs
-
-- [UPI QR Local API](docs/upi_qr_api.md) — standalone local API nhan `account_line` va tra QR image.
+> **Version:** 2.0.0 · **Runtime:** Python 3.13 · **UI:** FastAPI + static JS · **DB:** SQLite
 
 ---
 
-## 1. Python Backend
+## Mục lục
 
-### Chức năng chính
+- [Tính năng](#tính-năng)
+- [Kiến trúc](#kiến-trúc)
+- [Stack](#stack)
+- [Cài đặt nhanh](#cài-đặt-nhanh)
+- [Web UI](#web-ui)
+- [CLI](#cli)
+- [Cấu hình runtime (Settings Store)](#cấu-hình-runtime-settings-store)
+- [Cấu trúc mã nguồn](#cấu-trúc-mã-nguồn)
+- [Mô hình dữ liệu](#mô-hình-dữ-liệu)
+- [Tích hợp ngoài](#tích-hợp-ngoài)
+- [Kiểm thử](#kiểm-thử)
+- [Bảo mật](#bảo-mật)
 
-- **Reg**: Signup ChatGPT batch (Camoufox headless → fill form → OTP → 2FA)
-- **Get Session**: Login lại account → extract session JSON (`accessToken`)
-- **Get Link**: Lấy payment URL `pay.openai.com` cho GoPay/Stripe
-- **iCloud HME**: Quản lý pool Apple Hide My Email cho auto-reg
-- **AutoReg**: Poll iCloud emails mới → tự động signup
+---
+
+## Tính năng
+
+| Tab | Mô tả |
+|-----|-------|
+| **Reg** | Đăng ký ChatGPT hàng loạt: Camoufox (anti-detect) hoặc pure HTTP → điền form → nhận OTP từ mail provider → bật 2FA (TOTP). |
+| **Get Session** | Đăng nhập lại account → trích xuất session JSON + `accessToken`, hiển thị `planType` (free/plus/team). |
+| **UPI QR** | Lấy QR thanh toán UPI cho ChatGPT Plus India: login → tạo checkout Stripe → confirm UPI → approve loop → render QR. Tải ảnh về local (Blob), xem qua modal. |
+| **Settings** | Quản lý proxy pool (round-robin/random), test proxy, các cấu hình runtime. |
+| **iCloud HME** *(ẩn mặc định)* | Quản lý pool Apple Hide My Email, sinh email tự động cho auto-reg. |
+| **Get Link** *(ẩn mặc định)* | Lấy payment URL `pay.openai.com` cho GoPay/Stripe theo region. |
+
+**Cơ chế chung:**
+- **Multi-job song song** — chế độ Single / Multi 2 · 3 · 5 · 10 · 20 · 30 · 50 workers.
+- **Realtime** — toàn bộ trạng thái job + log đẩy qua SSE (`/api/sse`) tới frontend.
+- **Proxy pool** — xoay vòng, tự loại proxy chết khi gặp lỗi network.
+- **Recovery** — job đang chạy lúc restart được khôi phục từ SQLite.
 
 ### Mail providers
 
 | Mode | Input format |
 |------|-------------|
-| Outlook | `email\|password\|refresh_token\|client_id` |
-| iCloud Worker | `email` (worker tự nhận OTP) |
-| Gmail Advanced | `email\|api_key` (checkgmail.live API) |
+| Outlook (Microsoft Graph) | `email\|password\|refresh_token\|client_id` |
+| DongVanFB Outlook | `email\|password\|refresh_token\|client_id` |
+| Cloudflare Worker | `email` (worker tự nhận OTP) |
+| Gmail Advanced | `email\|api_key` (checkgmail.live) |
 
-### Setup (1 lệnh)
+---
+
+## Kiến trúc
+
+Monolith Python theo package, gồm 1 web runtime (FastAPI) + nhiều job manager async + repository SQLite + frontend static.
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│  Frontend tĩnh (web/static/*.js) — không bundler                 │
+│  index.html · app.js · session.js · upi.js · settings_panel.js   │
+│        │ fetch /api/*          │ EventSource /api/sse            │
+└────────┼───────────────────────┼────────────────────────────────┘
+         ▼                       ▼
+┌────────────────────────────────────────────────────────────────┐
+│  web/server.py — FastAPI app                                     │
+│  • Auth middleware (token)   • REST /api/*    • SSE mux           │
+│  • startup: hydrate Settings → apply_settings() cho managers     │
+└───┬──────────────┬───────────────┬───────────────┬──────────────┘
+    ▼              ▼               ▼               ▼
+┌────────┐  ┌────────────┐  ┌────────────┐  ┌──────────────┐
+│JobMgr  │  │SessionMgr  │  │UpiJobMgr   │  │LinkMgr/HME    │
+│(Reg)   │  │(Get Sess)  │  │(UPI QR)    │  │AutoReg        │
+└───┬────┘  └─────┬──────┘  └─────┬──────┘  └──────┬───────┘
+    ▼            ▼               ▼                ▼
+┌────────────────────────────────────────────────────────────────┐
+│  Domain layer                                                    │
+│  signup.py · session_phase.py · pay_upi_http.py · upi_runner.py  │
+│  payment_link.py · stripe_token.py · mfa_phase.py                │
+└───┬──────────────────────────────────────────────────┬─────────┘
+    ▼                                                    ▼
+┌──────────────────────┐                  ┌──────────────────────┐
+│ db/ (SQLite)         │                  │ External APIs        │
+│ engine · schema      │                  │ ChatGPT/OpenAI       │
+│ repositories         │                  │ Stripe · iCloud      │
+│ SettingsRepository   │                  │ Outlook · Worker mail│
+└──────────────────────┘                  └──────────────────────┘
+```
+
+**Luồng dữ liệu chính (ví dụ UPI QR):**
+1. `web/static/upi.js` → `POST /api/upi/jobs` (danh sách `email|password|secret`).
+2. `UpiJobManager` (`web/manager.py`) tạo job in-memory, enqueue, broadcast SSE.
+3. Worker gọi `web/upi_runner.run_upi_qr_probe()`:
+   - `session_phase.get_session_pure_request()` → login lấy `accessToken` (direct, không proxy).
+   - Tạo ChatGPT checkout → `pay_upi_http._stripe_init` → elements session.
+   - `stripe_token.extract_config_live()` sinh `js_checksum`/`rv_timestamp`.
+   - Confirm UPI theo nhiều variant → approve retry loop (rotate proxy).
+   - Trích QR image URL / `upi://` URI → render PNG bằng `qrcode`.
+4. Job lưu `qr_path` → frontend tải ảnh về Blob, hiển thị qua modal.
+
+---
+
+## Stack
+
+| Thành phần | Công nghệ |
+|-----------|-----------|
+| Ngôn ngữ | Python 3.13 (backend), JS/HTML/CSS (frontend, không framework) |
+| Web | FastAPI 0.136 · Starlette · Uvicorn |
+| CLI | Typer · Rich |
+| HTTP client | curl_cffi (TLS impersonate) · httpx · requests |
+| Browser automation | Camoufox 0.4.11 (Firefox stealth) · Playwright 1.49 |
+| Validation | Pydantic 2.13 |
+| Database | SQLite (stdlib `sqlite3`, WAL) — `runtime/data.db` |
+| 2FA / QR | pyotp · qrcode[pil] |
+
+---
+
+## Cài đặt nhanh
+
+**Yêu cầu:** Python 3.13, internet (tải deps + browser binary).
 
 ```bash
 # macOS / Linux
-cd gpt_signup_hybrid
 bash setup.sh
-# → http://127.0.0.1:8083/
 
 # Windows
 setup.bat
 ```
 
-**Yêu cầu**: Python 3.13, internet.
+Script tự động: tạo `.venv/` → cài `requirements.txt` → cài Playwright Firefox + Camoufox → tạo runtime dirs → khởi động Web UI tại `http://127.0.0.1:8083/`.
 
-Script tự động:
-1. Tạo `.venv/` + install deps
-2. Cài Playwright Firefox + Camoufox binary
-3. Tạo `.env` + runtime dirs
-4. Start web UI
-
-### Chạy lại
+**Chạy lại sau khi đã cài:**
 
 ```bash
-# macOS
+# macOS / Linux
 .venv/bin/python -m gpt_signup_hybrid web --host 127.0.0.1 --port 8083
 
 # Windows
 .venv\Scripts\python -m gpt_signup_hybrid web
 ```
 
-### CLI
+---
+
+## Web UI
+
+Mặc định bind **loopback** `127.0.0.1:8083`. Token auth tự sinh và được inject vào trang khi truy cập qua loopback.
+
+Bind ra LAN/public phải opt-in rõ ràng (UI lộ credential + điều khiển job):
 
 ```bash
-.venv/bin/python -m gpt_signup_hybrid signup --email foo@icloud.com
-.venv/bin/python -m gpt_signup_hybrid totp --secret BASE32SECRET
-.venv/bin/python -m gpt_signup_hybrid enable-2fa --email x --password y
+.venv/bin/python -m gpt_signup_hybrid web --host 0.0.0.0 --unsafe-expose-network
+# → in ra AUTH TOKEN, truyền qua ?token=... trên URL
 ```
 
-### Cấu trúc module
+---
 
-```
-├── __main__.py          # Entry: python -m gpt_signup_hybrid
-├── cli.py               # Typer CLI (signup, web, totp, enable-2fa, pool-status, migrate)
-├── config.py            # Settings dataclass, .env parsing
-├── models.py            # Pydantic models (SignupRequest, SignupResult)
-├── signup.py            # Orchestrator: Phase1 → Phase2 → MFA
-├── browser_phase.py     # Phase 1: Camoufox state machine (fill form, OTP)
-├── http_phase.py        # Phase 2: curl_cffi extract session token
-├── mfa_phase.py         # Enable TOTP 2FA
-├── session_phase.py     # Login + extract session
-├── payment_link.py      # Stripe checkout → payment URL
-├── mail_providers.py    # Outlook/iCloud/Gmail providers
-├── outlook_pool.py      # Outlook combo pool management
-├── random_profile.py    # Random name/age generator
-├── totp_helper.py       # TOTP utilities
-├── web/                 # FastAPI server + static UI
-│   ├── server.py        # App factory, routes, startup
-│   ├── manager.py       # JobManager (queue + workers + SSE)
-│   ├── mail_modes.py    # Mail mode registry
-│   ├── auth.py          # Token auth
-│   ├── sse_mux.py       # Multiplexed SSE
-│   └── static/          # HTML/JS/CSS frontend
-├── db/                  # SQLite persistence
-│   ├── engine.py        # Connection management
-│   ├── schema.py        # DDL + migrations (v1→v11)
-│   └── repositories.py  # CRUD repos (Settings, Jobs, Combos, Sessions)
-├── icloud_hme/          # iCloud Hide My Email pool
-│   ├── runner.py        # HmeRunner (generate/check/manage cycles)
-│   ├── generator.py     # Create HME addresses
-│   ├── client.py        # Apple API client (httpx)
-│   ├── pool.py          # Multi-profile pool manager
-│   └── web/             # Separate FastAPI router
-└── autoreg/             # Auto-registration runner
-    └── runner.py        # Poll + signup pipeline
+## CLI
+
+```bash
+python -m gpt_signup_hybrid <command>
 ```
 
-### Environment (.env)
+| Lệnh | Mô tả |
+|------|-------|
+| `web` | Khởi động Web UI (`--host`, `--port`, `--reload`, `--unsafe-expose-network`). |
+| `signup` | Đăng ký 1 account từ CLI. |
+| `enable-2fa` | Bật TOTP 2FA cho account (`--session-file`). |
+| `totp` | Sinh mã TOTP hiện tại từ base32 secret. |
+| `record` | Chạy hybrid browser recorder (debug payment flow). |
+| `pool-status` | Xem trạng thái Outlook combo pool. |
+| `import-pool` | Import combo pool vào SQLite. |
+| `migrate` | Chạy migration schema DB. |
+
+Các entry point khác:
+
+```bash
+python -m gpt_signup_hybrid.pay_upi_http   --combo 'EMAIL|PASS|SECRET'   # test UPI thuần HTTP
+python -m gpt_signup_hybrid.icloud_hme      ...                          # CLI quản lý iCloud HME
+```
+
+---
+
+## Cấu hình runtime (Settings Store)
+
+> **Quy tắc cốt lõi:** Mọi cấu hình runtime là **single source of truth** trong bảng SQLite `settings`, truy cập qua `SettingsRepository` (`db/repositories.py`). **Không** dùng file JSON/YAML riêng, **không** dùng `localStorage` cho config.
+
+- **Backend** đọc settings tại startup (`apply_settings()`), ghi write-through khi user đổi.
+- **Frontend** dùng `Settings.get(key)` / `Settings.save(key, value, token)` (`web/static/settings.js`).
+- **Key mới** phải thêm vào `_EXACT_KEYS` + `_validate_type_constraint()` trước khi dùng.
+- Namespace `namespace.field` (dot-separated, lowercase): `reg.headless`, `proxy.pool`, `upi.approve_retries`...
+
+`.env` chỉ dùng cho **bootstrap/default** (không phải runtime config):
 
 ```env
 BROWSER_ENGINE=camoufox
 RUNTIME_DIR=runtime
-HYBRID_MAX_CONCURRENT=2          # Concurrent jobs [1-10]
-HYBRID_OUTLOOK_PROXY=            # http://user:pass@host:port
-HYBRID_JOB_TIMEOUT=240           # Seconds [30-600]
-ICLOUD_API_AUTH_TOKEN=           # Auth token for iCloud API
+HYBRID_MAX_CONCURRENT=2        # [1-10]
+HYBRID_JOB_TIMEOUT=240         # giây [30-600], phải > OTP timeout 180s
+HYBRID_OUTLOOK_PROXY=          # seed proxy pool (khuyến nghị cấu hình trong UI)
+ICLOUD_API_AUTH_TOKEN=         # token cho iCloud API
+GPT_SIGNUP_WEB_TOKEN=          # override web auth token (mặc định tự sinh)
+```
+
+Xem đầy đủ trong [`.env.example`](.env.example).
+
+---
+
+## Cấu trúc mã nguồn
+
+```
+gpt_signup_hybrid/
+├── __main__.py / gpt_signup_hybrid.py   # Entry: python -m gpt_signup_hybrid
+├── cli.py                  # Typer CLI (web, signup, totp, enable-2fa, migrate, ...)
+├── config.py               # Settings dataclass + .env parsing + runtime paths
+├── models.py               # Pydantic: SignupRequest, SignupResult, BrowserHandoff
+│
+│  ── Domain: signup ──
+├── signup.py               # Orchestrator: browser/request phase → http → MFA
+├── browser_phase.py        # Phase browser (Camoufox state machine)
+├── request_phase.py        # Phase pure HTTP (curl_cffi)
+├── http_phase.py           # Trích session/access token sau browser phase
+├── session_phase.py        # Login lại + lấy session JSON
+├── mfa_phase.py            # Bật TOTP 2FA
+├── mail_providers.py       # Outlook/DongVanFB/Worker/Gmail providers
+├── outlook_pool.py         # Quản lý Outlook combo pool
+├── sentinel_*.py           # Xử lý OpenAI Sentinel challenge (PoW + QuickJS VM)
+│
+│  ── Domain: payment ──
+├── payment_link.py         # ChatGPT checkout → Stripe → payment/GoPay URL
+├── pay_upi_http.py         # Flow UPI thuần HTTP (constants + Stripe helpers)
+├── stripe_token.py         # Trích js_checksum / rv_timestamp từ bundle Stripe
+├── record_pay_upi.py       # Hybrid recorder (debug)
+│
+├── web/
+│   ├── server.py           # FastAPI app: routes, auth middleware, startup/shutdown
+│   ├── manager.py          # JobManager · SessionJobManager · LinkJobManager · UpiJobManager
+│   ├── upi_runner.py       # Async probe lấy QR UPI cho từng account
+│   ├── sse_mux.py          # SSE fan-out đa kênh + snapshot
+│   ├── auth.py             # Token auth (header/query/cookie)
+│   ├── proxy_pool.py       # Proxy pool (round-robin/random, mark-dead)
+│   ├── mail_modes.py       # Registry mail mode cho UI/backend
+│   ├── icloud_routes.py    # Router /api/icloud/* + AutoReg
+│   └── static/             # Frontend: index.html, app.js, session.js, upi.js, ...
+│
+├── db/
+│   ├── engine.py           # DatabaseEngine: WAL, transaction, migration
+│   ├── schema.py           # DDL + migrations (CURRENT_VERSION)
+│   ├── repositories.py     # Combo/Job/Session/Settings/iCloud/ChatGptAccount repos
+│   └── __init__.py         # get_engine() · get_repos() · get_settings_repo()
+│
+├── icloud_hme/             # Apple Hide My Email: pool, generator, runner, client
+├── autoreg/                # AutoReg runner (poll HME emails → signup)
+├── codex_auth/             # Codex OAuth helper (PKCE)
+├── test/                   # Verification scripts (check_*, smoke_*, test_*)
+└── docs/                   # Tài liệu (pay_upi_runbook, upi_qr_api)
 ```
 
 ---
 
-## 2. gopay-link-service (Rust)
+## Mô hình dữ liệu
 
-Standalone HTTP service lấy GoPay/Midtrans payment link từ ChatGPT access token.
+SQLite single-file `runtime/data.db`, schema versioned trong `db/schema.py`:
 
-### Flow
+| Bảng | Vai trò |
+|------|---------|
+| `settings` | Single source of truth cho runtime config (KV, JSON value). |
+| `jobs` + `job_logs` | Job lifecycle (signup/session/link) + log dòng. |
+| `outlook_combos` | Outlook combo pool + trạng thái sử dụng. |
+| `session_results` | Session JSON + MFA pending state. |
+| `chatgpt_accounts` | Account tạo bởi AutoReg. |
+| `icloud_accounts` · `icloud_emails` · `icloud_audit_log` · `pool_state` | iCloud HME pool. |
 
-```
-access_token → ChatGPT checkout API → Stripe init
-→ create GoPay payment method → confirm → redirect → Midtrans URL
-```
+> **Lưu ý:** UPI QR job là **in-memory** (`UpiJobManager`), không persist DB — vòng đời ngắn, chạy lại được. QR PNG lưu tạm tại `runtime/upi_qr/`.
 
-### Build & Run
+---
+
+## Tích hợp ngoài
+
+| Dịch vụ | Module | Mục đích |
+|---------|--------|----------|
+| ChatGPT / OpenAI | `browser_phase`, `request_phase`, `session_phase` | Signup, login, session, sentinel. |
+| Stripe | `pay_upi_http`, `payment_link`, `stripe_token` | Checkout, elements, confirm UPI, token. |
+| Apple iCloud HME | `icloud_hme/client`, `icloud_hme/session` | Sinh/quản lý Hide My Email. |
+| Microsoft Graph / DongVanFB | `mail_providers` | Poll OTP Outlook. |
+| Cloudflare Worker / Gmail | `mail_providers` | Poll OTP qua worker/API. |
+
+---
+
+## Kiểm thử
+
+Toàn bộ verification script nằm trong `test/`, chạy trực tiếp bằng file (không inline `python -c`):
 
 ```bash
-cd gopay-link-service
-cargo build --release
-# Binary: target/release/gopay-link-service
-
-# Run (default port 8899)
-PORT=8899 MAX_CONCURRENT=5 ./target/release/gopay-link-service
+.venv/bin/python test/check_upi_module_imports.py    # 12 unit check module UPI
+.venv/bin/python test/smoke_upi_server_boot.py       # 12 integration check FastAPI TestClient
 ```
 
-### API
-
-```
-POST /api/gopay
-Content-Type: application/json
-
-# Option 1: access_token trực tiếp
-{"access_token": "eyJhbGci..."}
-
-# Option 2: session JSON (tự extract accessToken)
-{"session_json": "{\"accessToken\":\"eyJ...\"}"}
-
-Response:
-{"success": true, "gopay_link": "https://app.midtrans.com/...", "payment_link": "https://pay.openai.com/..."}
-```
-
-### Deploy
-
-- Init scripts trong `deploy/` cho systemd (gopay-link-service + cloudflared tunnel)
-- Web UI tại `/` (paste session → get link)
-
-### Cấu trúc
-
-```
-gopay-link-service/
-├── Cargo.toml
-├── Cargo.lock
-├── src/
-│   ├── main.rs          # Axum router, rate limiter, handlers
-│   └── gopay.rs         # Stripe/Midtrans flow logic
-├── static/
-│   └── index.html       # Web UI
-└── deploy/
-    ├── gopay-link-service.init
-    └── cloudflared-tunnel.init
-```
+Quy ước đặt tên: `check_<scope>.py` (check chức năng), `smoke_<scope>.py` (smoke integration), `test_<scope>.py` (unit/pytest), `probe_<scope>.py` (research).
 
 ---
 
-## 3. gopay-checker-extension (Chrome Extension)
+## Bảo mật
 
-Chrome Extension (Manifest V3) check số điện thoại đã đăng ký GoPay chưa, qua Midtrans API.
-
-### Chức năng
-
-- **Popup**: Paste session JSON → tự tạo snap token → check phone
-- **Content Script (hero-sms.com)**: Tự detect số điện thoại trên trang → check GoPay → hiện badge ✓/✗
-- **Content Script (chatgpt.com)**: Extract session/accessToken từ cookie
-
-### Cài đặt
-
-1. Chrome → `chrome://extensions/` → Developer mode ON
-2. "Load unpacked" → chọn folder `gopay-checker-extension/`
-3. Pin extension, mở popup, paste session JSON
-
-### Cấu trúc
-
-```
-gopay-checker-extension/
-├── manifest.json          # MV3 config
-├── background.js          # Service Worker: HMAC signature, phone check queue
-├── content-herosms.js     # Auto-detect + badge trên hero-sms.com
-├── content-chatgpt.js     # Extract session từ chatgpt.com
-├── content-midtrans.js    # Midtrans page integration
-├── inject-midtrans.js     # Inject helper
-├── popup.html             # Extension popup UI
-├── popup.js               # Popup logic
-├── badge.css              # Badge styles
-└── icons/                 # Extension icons (16/48/128)
-```
-
----
-
-## Runtime data
-
-Tất cả data runtime nằm trong `runtime/` (gitignored):
-
-```
-runtime/
-├── data.db              # SQLite database (single source of truth)
-├── profiles/            # Browser profile templates
-├── sessions/            # Signup result JSON
-├── outlook_state/       # Token rotation state
-└── har_hybrid/          # HAR debug captures
-```
+- **Auth token** gate toàn bộ `/api/*` (header `X-API-Token`, query `?token=`, hoặc cookie `gsh_token`).
+- **Loopback-first** — bind ra ngoài phải `--unsafe-expose-network`.
+- **Redact** — proxy pool, API key, worker config, auth token được che trong audit log.
+- **Proxy** — credential nhúng trong URL được mask khi log.
+- Đây là tool **nội bộ / cục bộ**; không có hardening cho deploy public.
 
 ---
 
