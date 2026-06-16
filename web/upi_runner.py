@@ -42,7 +42,7 @@ APPROVE_PROXY_BATCH: int = 3
 # flaky trả exception 1-2 lần rồi tự khỏi — đếm tổng (như cũ) sẽ làm job dừng
 # sớm dù user cấu hình approve_retries cao.
 # Set 0 để disable hoàn toàn (chỉ dừng khi approved hoặc hết retry).
-APPROVE_BACKEND_EXCEPTION_CONSECUTIVE: int = 5
+APPROVE_BACKEND_EXCEPTION_CONSECUTIVE: int = 15
 CONFIRM_VARIANTS: tuple[str, ...] = ("qr_code", "empty", "flow_qr", "intent")
 
 LogFn = Callable[[str], None]
@@ -1172,12 +1172,25 @@ async def run_upi_qr_probe(
 
             approved = False
             approve_started = monotonic()
+            # Virtual attempt counter dành riêng cho proxy selection (tách
+            # khỏi approve_index). Mỗi attempt += 1; khi gặp backend_exception
+            # ta advance qua hết phần còn lại của batch hiện tại để skip sang
+            # proxy kế ngay — tránh "đốt" threshold cho 1 proxy đang bị
+            # throttle. Indexing vẫn dùng `_proxy_url_for_retry` để giữ
+            # contract: floor((va-1)/batch) % len(pool).
+            proxy_virtual_attempt = 0
+            _proxy_advance_enabled = (
+                PROXY_FROM_STEP <= 6
+                and APPROVE_PROXY_BATCH > 1
+                and len(proxy_pool) > 1
+            )
             for approve_index in range(1, approve_retries + 1):
+                proxy_virtual_attempt += 1
                 approve_proxy = _proxy_url_for_retry(
                     proxy_pool,
                     from_step=PROXY_FROM_STEP,
                     step=6,
-                    attempt=approve_index,
+                    attempt=proxy_virtual_attempt,
                     per_proxy_attempts=APPROVE_PROXY_BATCH,
                 )
                 try:
@@ -1228,6 +1241,15 @@ async def run_upi_qr_probe(
                         _safe_log(_fmt_step("6/6", "approve", "fail",
                                             f"consec be_excpt {consecutive_backend_exception}/{APPROVE_BACKEND_EXCEPTION_CONSECUTIVE}"))
                         break
+                    # Advance proxy ngay khi gặp backend_exception: nếu vẫn
+                    # còn trong batch hiện tại, jump tới đầu batch kế. Lần
+                    # sau += 1 sẽ trỏ vào proxy mới. Giúp tránh đốt threshold
+                    # cho 1 proxy đang bị Stripe throttle.
+                    if _proxy_advance_enabled:
+                        current_batch = (proxy_virtual_attempt - 1) // APPROVE_PROXY_BATCH
+                        position_in_batch = proxy_virtual_attempt - current_batch * APPROVE_PROXY_BATCH
+                        if position_in_batch < APPROVE_PROXY_BATCH:
+                            proxy_virtual_attempt = (current_batch + 1) * APPROVE_PROXY_BATCH
                 else:
                     # Reset chuỗi consecutive khi gặp result không-exception
                     # (server không stuck) — log gọn 1 dòng nếu reset thật sự xảy ra.

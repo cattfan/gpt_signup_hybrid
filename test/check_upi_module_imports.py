@@ -48,7 +48,7 @@ def t01_import_runner():
     assert DO_CONFIRM is True
     assert DO_APPROVE is True
     assert APPROVE_DELAY == 3.0
-    assert APPROVE_BACKEND_EXCEPTION_CONSECUTIVE == 5
+    assert APPROVE_BACKEND_EXCEPTION_CONSECUTIVE == 15
     assert CONFIRM_VARIANTS == ("qr_code", "empty", "flow_qr", "intent")
     assert callable(run_upi_qr_probe)
     assert UpiQrResult.__name__ == "UpiQrResult"

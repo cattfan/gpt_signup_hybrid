@@ -34,12 +34,12 @@ def main() -> int:
         return 1
     print("[PASS] đã xoá hết tên cũ APPROVE_BACKEND_EXCEPTION_FAILS", flush=True)
 
-    # 3. Tên mới + value default = 5.
-    expected_constant = "APPROVE_BACKEND_EXCEPTION_CONSECUTIVE: int = 5"
+    # 3. Tên mới + value default = 15.
+    expected_constant = "APPROVE_BACKEND_EXCEPTION_CONSECUTIVE: int = 15"
     if expected_constant not in src:
         print(f"[FAIL] thiếu constant {expected_constant!r}", flush=True)
         return 1
-    print("[PASS] APPROVE_BACKEND_EXCEPTION_CONSECUTIVE = 5 (default)", flush=True)
+    print("[PASS] APPROVE_BACKEND_EXCEPTION_CONSECUTIVE = 15 (default)", flush=True)
 
     # 4. Logic consecutive: phải có biến + reset block.
     expectations = [
