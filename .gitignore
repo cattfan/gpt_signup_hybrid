@@ -90,3 +90,8 @@ gh_switch.sh
 .playwright-mcp/
 test/L2-apktool/
 test/L2-decompiled/
+plans
+
+# Real account credentials — NEVER commit (password / refresh_token / 2FA)
+test/accounts_cleaned.txt
+test/check_clean_credentials.py
