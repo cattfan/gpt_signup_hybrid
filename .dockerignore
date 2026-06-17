@@ -38,6 +38,8 @@ tasks/
 tests/
 test/
 __tests__/
+# Giữ riêng probe entitlement (manual-run trong container để check Plus sau upgrade).
+!test/probe_account_entitlement.py
 *.md
 release-manifest.json
 .repomixignore

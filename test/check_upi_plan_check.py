@@ -184,16 +184,35 @@ def t08_frontend_hooks() -> int:
         "function renderPlanBadge(",
         "function triggerPlanCheck(",
         "/api/upi/jobs/${encodeURIComponent(jobId)}/check-session",
-        "triggerPlanCheck(row.dataset.id)",
         "${planBadge}",
         "renderPlanBadge(j)",
         # state.jobs là Map → MUST dùng .get(jobId), KHÔNG được [jobId].
         "state.jobs.get(jobId)",
+        # Auto-poll: hằng số 20s × 6 + poller completion-driven.
+        "const PLAN_POLL_INTERVAL_MS = 20000",
+        "const PLAN_POLL_MAX = 6",
+        "function startPlanPoll(",
+        "function _planPollTick(",
+        "function _stopPlanPoll(",
+        "clearTimeout(",
+        # Nhánh cd.expired gọi startPlanPoll (KHÔNG triggerPlanCheck trực tiếp — chống flood 1 req/giây).
+        "startPlanPoll(row.dataset.id)",
+        # Nút Recheck: force check kể cả khi đã có plan_check.
+        'data-action="recheck-plan"',
+        "triggerPlanCheck(id, { force: true })",
+        # Poller đếm theo "đã fire thật" → triggerPlanCheck nhận option force.
+        "triggerPlanCheck(jobId, { force: true })",
     ]
     for n in needles:
         if n not in src:
             print(f"[FAIL] TC-08 frontend :: thiếu {n!r}", flush=True)
             return 1
+    # C2 regression: nhánh cd.expired KHÔNG được gọi triggerPlanCheck trực tiếp
+    # nữa (sẽ flood mỗi giây) — chỉ được qua startPlanPoll.
+    if "triggerPlanCheck(row.dataset.id)" in src:
+        print("[FAIL] TC-08 frontend :: cd.expired vẫn gọi triggerPlanCheck trực tiếp (flood — C2)",
+              flush=True)
+        return 1
     # Regression guard: triggerPlanCheck KHÔNG được dùng obj-access vào Map.
     # Phạm vi grep gọn quanh function thân để tránh false-positive với
     # `state.jobs[id]` trong code khác (nếu có).
@@ -207,7 +226,13 @@ def t08_frontend_hooks() -> int:
         print("[FAIL] TC-08 frontend :: triggerPlanCheck dùng state.jobs[...] (sai, Map cần .get)",
               flush=True)
         return 1
-    print("[PASS] TC-08 frontend :: render + trigger + hook + Map access đúng", flush=True)
+    # H1 cleanup: applyRemove phải dừng poller (tránh timer leak sau remove).
+    rm_start = src.find("function applyRemove(")
+    rm_end = src.find("\n  }\n", rm_start)
+    if rm_start < 0 or rm_end < 0 or "_stopPlanPoll(" not in src[rm_start:rm_end]:
+        print("[FAIL] TC-08 frontend :: applyRemove thiếu _stopPlanPoll cleanup (leak — H1)", flush=True)
+        return 1
+    print("[PASS] TC-08 frontend :: render + poll + recheck + cleanup + Map access đúng", flush=True)
     return 0
 
 
@@ -227,6 +252,67 @@ def t09_css_classes() -> int:
     return 0
 
 
+def t10_parse_entitlement() -> int:
+    from gpt_signup_hybrid.session_phase import _parse_entitlement_plan
+
+    def ent(plan, active, expires=None):
+        return {"accounts": {"default": {"entitlement": {
+            "subscription_plan": plan,
+            "has_active_subscription": active,
+            "expires_at": expires,
+        }}}}
+
+    # (data, expected_plan, expected_is_plus)
+    cases = [
+        (ent("chatgptplusplan", True, "2026-07-17"), "plus", True),
+        (ent("chatgptfreeplan", False), "free", False),
+        # Strict Plus-only: Pro/Team active KHÔNG là Plus.
+        (ent("chatgptproplan", True), "pro", False),
+        (ent("chatgptteamplan", True), "team", False),
+        # active=True nhưng plan free → false-positive guard.
+        (ent("chatgptfreeplan", True), "free", False),
+        # Plus label nhưng subscription hết hạn → is_plus False.
+        (ent("chatgptplusplan", False), "plus", False),
+        # Shape thiếu → None/False, không raise.
+        ({}, None, False),
+        ({"accounts": {}}, None, False),
+        ({"accounts": {"default": {}}}, None, False),
+        (None, None, False),
+        # Không có "default" → lấy account đầu tiên.
+        ({"accounts": {"acc-x": {"entitlement": {
+            "subscription_plan": "chatgptplusplan", "has_active_subscription": True}}}}, "plus", True),
+    ]
+    for data, exp_plan, exp_plus in cases:
+        got = _parse_entitlement_plan(data)
+        if got.get("plan") != exp_plan or got.get("is_plus") != exp_plus:
+            print(f"[FAIL] TC-10 parse :: {data!r} → plan={got.get('plan')!r} "
+                  f"is_plus={got.get('is_plus')!r}, want plan={exp_plan!r} is_plus={exp_plus!r}",
+                  flush=True)
+            return 1
+    # Mọi shape thiếu phải có đủ 4 key (không raise / không KeyError downstream).
+    keys = set(_parse_entitlement_plan({}).keys())
+    if keys != {"plan", "is_plus", "has_active_subscription", "expires"}:
+        print(f"[FAIL] TC-10 parse :: blank shape sai key {keys}", flush=True)
+        return 1
+    print(f"[PASS] TC-10 parse :: {len(cases)} case OK (strict Plus-only)", flush=True)
+    return 0
+
+
+def t11_fetch_entitlement_signature() -> int:
+    from gpt_signup_hybrid.session_phase import fetch_account_entitlement
+
+    if not asyncio.iscoroutinefunction(fetch_account_entitlement):
+        print("[FAIL] TC-11 fetch_entitlement :: phải là async", flush=True)
+        return 1
+    sig = inspect.signature(fetch_account_entitlement)
+    if "access_token" not in sig.parameters:
+        print(f"[FAIL] TC-11 fetch_entitlement :: thiếu param access_token {list(sig.parameters)}",
+              flush=True)
+        return 1
+    print("[PASS] TC-11 fetch_entitlement :: async + có access_token", flush=True)
+    return 0
+
+
 def main() -> int:
     print("=== check_upi_plan_check ===", flush=True)
     tests = [
@@ -239,6 +325,8 @@ def main() -> int:
         t07_endpoint_registered,
         t08_frontend_hooks,
         t09_css_classes,
+        t10_parse_entitlement,
+        t11_fetch_entitlement_signature,
     ]
     fails = 0
     for t in tests:

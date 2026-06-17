@@ -80,6 +80,61 @@ def _append_link_log(*, session_dir: Path, payment_link: str) -> None:
         f.write(f"{payment_link}\n")
 
 
+# ── UPI token export ──────────────────────────────────────────────────
+# Lưu auth artifacts của 1 UPI job ra file để check entitlement (Plus?) SAU
+# khi account upgrade. access_token (JWT) chỉ sống trong RAM + hết hạn sau
+# vài giờ → lưu kèm session_cookies (bền hơn) để re-mint token tươi khi cần.
+# Ghi vào runtime/ (đã .gitignore) — token KHÔNG bao giờ đi qua SSE/to_dict().
+_UPI_TOKEN_DIR = Path(__file__).resolve().parents[1] / "runtime" / "upi_tokens"
+
+
+def _safe_email_slug(email: str) -> str:
+    """Email → tên file an toàn (giữ chữ/số/._-@, ký tự khác → _)."""
+    return "".join(c if (c.isalnum() or c in "._-@") else "_" for c in email) or "unknown"
+
+
+def _export_upi_token(
+    *,
+    email: str,
+    access_token: str,
+    session_cookies: list[dict[str, Any]] | None,
+    proxy: str | None,
+    checkout_session: str | None,
+    amount: int,
+    qr_produced: bool,
+    job_ok: bool,
+) -> Path:
+    """Ghi token artifacts của 1 job ra runtime/upi_tokens/<email>.json (latest-wins).
+
+    Atomic write (tmp + replace). Trả path đã ghi. Caller wrap try/except —
+    IO lỗi KHÔNG được làm fail job (mirror accounts.txt best-effort).
+    """
+    _UPI_TOKEN_DIR.mkdir(parents=True, exist_ok=True)
+    path = _UPI_TOKEN_DIR / f"{_safe_email_slug(email)}.json"
+    payload = {
+        "email": email,
+        "access_token": access_token,
+        "session_cookies": session_cookies,
+        "proxy": proxy,
+        "checkout_session": checkout_session or None,
+        "amount": amount,
+        "qr_produced": qr_produced,
+        "job_ok": job_ok,
+        "exported_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    # File chứa access_token + proxy creds + cookies → 0600 (chmod tmp TRƯỚC
+    # replace để file cuối kế thừa perm, tránh cửa sổ 0644). Best-effort: FS
+    # không hỗ trợ chmod (vd Windows) thì bỏ qua.
+    try:
+        os.chmod(tmp, 0o600)
+    except OSError:
+        pass
+    tmp.replace(path)  # atomic — đọc khi check không bao giờ thấy file dở
+    return path
+
+
 # ── Load .env riêng của gpt_signup_hybrid ─────────────────────────────
 def _load_hybrid_env() -> dict[str, str]:
     """Đọc gpt_signup_hybrid/.env (cùng thư mục package root)."""
@@ -3836,6 +3891,10 @@ class UpiJob:
     # restart server (UpiJob vốn không persist DB).
     _access_token: str | None = field(default=None, repr=False)
     _session_cookies: list[dict[str, Any]] | None = field(default=None, repr=False)
+    # Proxy đã mint access_token (proxy_pool[0], PROXY_FROM_STEP=3 ≤ checkout).
+    # Lưu để replay Bearer entitlement-check qua đúng IP (tránh 403/correlation)
+    # + ghi vào token export. repr=False + KHÔNG vào to_dict() — không leak.
+    _active_proxy: str | None = field(default=None, repr=False)
     # Cache kết quả check-session gần nhất để frontend không phải re-fetch khi
     # user mở lại UI / re-render. None = chưa check bao giờ.
     plan_check: dict[str, Any] | None = None
@@ -4177,10 +4236,13 @@ class UpiJobManager:
         khi step 1 (login) thành công, KHÔNG persist DB nên mất khi restart
         server.
 
+        Plan đọc LIVE từ /backend-api entitlement (Bearer accessToken), fallback
+        về plan trong /api/auth/session cache nếu live fail.
+
         Trả dict với keys:
             ok: bool
             plan: str | None     (e.g. "plus", "free", "team")
-            is_plus: bool        (heuristic: plan chứa "plus")
+            is_plus: bool        (live: strict Plus-only; fallback: plan chứa "plus")
             expires: str | None  (ISO timestamp từ session.expires)
             checked_at: int      (unix seconds)
             error: str | None    (chỉ khi ok=False)
@@ -4213,7 +4275,11 @@ class UpiJobManager:
             self._broadcast_job(job)
             return result
 
-        from ..session_phase import fetch_session_via_http, SessionError
+        from ..session_phase import (
+            fetch_session_via_http,
+            fetch_account_entitlement,
+            SessionError,
+        )
 
         try:
             data = await fetch_session_via_http(
@@ -4248,8 +4314,29 @@ class UpiJobManager:
             self._broadcast_job(job)
             return result
 
-        plan = _extract_plan_from_session(data)
-        is_plus = bool(plan and "plus" in plan.lower())
+        # Plan đọc LIVE từ /backend-api entitlement (Bearer): phản ánh trạng thái
+        # subscription thật trong DB, không bị trễ như planType cache trong
+        # /api/auth/session JWT (badge kẹt FREE sau khi UPI pump lên Plus). Session
+        # JSON ở trên giờ chỉ còn dùng cho `expires` + accessToken dự phòng.
+        token = job._access_token or (data.get("accessToken") if isinstance(data, dict) else None)
+        try:
+            ent = await fetch_account_entitlement(
+                access_token=token,
+                proxy=job._active_proxy,  # None = IP trần (đã verify vẫn 200)
+                timeout=20.0,
+            )
+            plan = ent.get("plan")
+            is_plus = bool(ent.get("is_plus"))
+        except SessionError as exc:
+            # Live fail → fallback đọc plan từ session cache (kém tươi nhưng còn
+            # tốt hơn không có gì). exc đã scrub token + chỉ kèm status code.
+            self._job_log(job, f"[check-plan] entitlement live fail, fallback session: {exc}")
+            plan = _extract_plan_from_session(data)
+            is_plus = bool(plan and "plus" in plan.lower())
+
+        # `expires` giữ nguồn session-expiry như cũ — KHÔNG đổi sang subscription
+        # expires_at để field không mang 2 nghĩa (frontend countdown đọc
+        # qr_expires_at riêng, không dùng field này).
         expires_raw = data.get("expires") if isinstance(data, dict) else None
         expires_str = expires_raw if isinstance(expires_raw, str) else None
         result = {
@@ -4358,6 +4445,10 @@ class UpiJobManager:
 
             # Lấy proxy_pool từ singleton (hot-load — user vừa cập nhật là dùng ngay).
             proxy_pool = list(get_proxy_pool().live_entries())
+            # Proxy mint token = first_proxy (runner dùng proxy_pool[0] từ
+            # PROXY_FROM_STEP=3 ≤ bước checkout). Lưu để entitlement-check replay
+            # qua đúng IP + ghi vào token export (H3).
+            job._active_proxy = proxy_pool[0] if proxy_pool else None
 
             _UPI_QR_DIR.mkdir(parents=True, exist_ok=True)
             qr_out_path = _UPI_QR_DIR / f"{job.id}.png"
@@ -4399,6 +4490,27 @@ class UpiJobManager:
             job._session_cookies = result.session_cookies
             # Reset plan_check cũ (có thể còn từ retry trước).
             job.plan_check = None
+
+            # Export token artifacts ra file để check entitlement (Plus?) SAU khi
+            # account upgrade — token chỉ sống trong RAM, mất khi restart. Export
+            # mọi job có access_token (login OK, kể cả khi QR/approve fail) vì tỉ
+            # lệ ra QR thấp. Best-effort: IO lỗi KHÔNG làm fail job; log không in
+            # giá trị token (chỉ tên file).
+            if result.access_token:
+                try:
+                    out = _export_upi_token(
+                        email=job.email,
+                        access_token=result.access_token,
+                        session_cookies=result.session_cookies,
+                        proxy=job._active_proxy,
+                        checkout_session=result.checkout_session,
+                        amount=result.amount,
+                        qr_produced=bool(result.qr_path),
+                        job_ok=result.ok,
+                    )
+                    self._job_log(job, f"[token] export → runtime/upi_tokens/{out.name}")
+                except Exception as exc:  # noqa: BLE001
+                    self._job_log(job, f"[token] export fail: {type(exc).__name__}: {exc}")
 
             if result.ok:
                 job.status = "success"

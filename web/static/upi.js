@@ -72,11 +72,21 @@
   }
 
   // ── Plan check (sau khi QR hết hạn) ─────────────────────────────────
-  // Khi 1 job success có QR hết hạn → fire 1 lần POST check-session, nhận
-  // {ok, plan, is_plus, expires, error}. Server cache vào job.plan_check để
-  // các lần render sau giữ nguyên badge. Client cũng cache trong
-  // _planCheckInflight để tránh fire trùng lúc countdown vừa cross 0.
+  // Sau khi QR hết hạn → auto-poll POST check-session đến khi thấy Plus hoặc
+  // hết lượt (upgrade UPI→Plus có thể chậm propagate). Mỗi lần nhận
+  // {ok, plan, is_plus, expires, error}; server cache vào job.plan_check.
+  // _planCheckInflight dedupe request đang bay; _planPollState quản poller/job.
   const _planCheckInflight = new Set();
+
+  // Auto-poll: tối đa 6 lần check THẬT, mỗi lần cách ~20s tính TỪ lúc lần
+  // trước hoàn tất (completion-driven, KHÔNG setInterval song song) — 1 check
+  // worst-case ~40s nên timer cứng 20s sẽ chồng request.
+  const PLAN_POLL_INTERVAL_MS = 20000;
+  const PLAN_POLL_MAX = 6;
+  // jobId → { count, timer }. Entry tồn tại = đang poll HOẶC đã xong (giữ entry
+  // để updateCountdowns mỗi giây không spawn poller mới). Xóa khi job
+  // removed / rời trạng thái success (xem _stopPlanPoll).
+  const _planPollState = new Map();
 
   function renderPlanBadge(j) {
     if (!j || j.status !== 'success') return '';
@@ -97,16 +107,18 @@
       title="account.planType=${escHtml(plan || 'free')}">${escHtml(label)}</span>`;
   }
 
-  // Trigger check-session khi QR vừa expired lần đầu. Idempotent: server cache
-  // job.plan_check, client cache _planCheckInflight. Re-render sẽ pick state mới.
-  function triggerPlanCheck(jobId) {
-    if (!jobId) return;
-    if (_planCheckInflight.has(jobId)) return;
+  // Fire 1 request check-session. Trả Promise<bool> = "đã thực sự gửi request"
+  // (poller dùng để đếm đúng số lần check THẬT, không tính lần early-return).
+  // force=true (poller + nút Recheck) bỏ qua cache guard j.plan_check; force=false
+  // (render path mỗi giây) GIỮ guard — đây là thứ chặn flood 1 req/giây.
+  function triggerPlanCheck(jobId, { force = false } = {}) {
+    if (!jobId) return Promise.resolve(false);
+    if (_planCheckInflight.has(jobId)) return Promise.resolve(false);
     const j = state.jobs.get(jobId);
-    if (!j || j.status !== 'success') return;
-    if (j.plan_check) return;  // đã có kết quả từ server (cache hoặc render trước)
+    if (!j || j.status !== 'success') return Promise.resolve(false);
+    if (!force && j.plan_check) return Promise.resolve(false);
     _planCheckInflight.add(jobId);
-    api(`/api/upi/jobs/${encodeURIComponent(jobId)}/check-session`, {
+    return api(`/api/upi/jobs/${encodeURIComponent(jobId)}/check-session`, {
       method: 'POST',
     }).then((data) => {
       // Apply trực tiếp lên job state để render ngay; server cũng broadcast
@@ -116,6 +128,7 @@
         cur.plan_check = data;
         renderJobs();
       }
+      return true;
     }).catch((err) => {
       console.warn('[upi] check-session failed:', err);
       // Đặt fake plan_check để hiện badge "PLAN ?" + tooltip lỗi.
@@ -128,8 +141,53 @@
         };
         renderJobs();
       }
+      return true;  // request đã gửi (dù lỗi) → vẫn tính 1 lần check thật
     }).finally(() => {
       _planCheckInflight.delete(jobId);
+    });
+  }
+
+  // Dừng poller + xóa entry (cho phép poll lại nếu job quay về success sau này).
+  function _stopPlanPoll(jobId) {
+    const st = _planPollState.get(jobId);
+    if (st && st.timer) clearTimeout(st.timer);
+    _planPollState.delete(jobId);
+  }
+
+  // Khởi động auto-poll cho 1 job success vừa hết hạn QR. Self-guard chống
+  // spawn trùng (SSE re-render gọi mỗi giây) + chống restart sau khi xong.
+  function startPlanPoll(jobId) {
+    if (!jobId) return;
+    if (_planPollState.has(jobId)) return;  // đang poll HOẶC đã xong → không spawn lại
+    const j = state.jobs.get(jobId);
+    if (!j || j.status !== 'success') return;
+    if (j.can_check_plan === false) return;  // mất cookies (server restart) → poll vô ích
+    if (j.plan_check && j.plan_check.is_plus) return;  // đã Plus rồi
+    _planPollState.set(jobId, { count: 0, timer: null });
+    _planPollTick(jobId);  // check ngay lần đầu (QR vừa expired)
+  }
+
+  function _planPollTick(jobId) {
+    const st = _planPollState.get(jobId);
+    if (!st) return;
+    const j = state.jobs.get(jobId);
+    // Guard đầu tick TRƯỚC khi đọc property — job có thể bị remove/rời success.
+    if (!j || j.status !== 'success') { _stopPlanPoll(jobId); return; }
+    // Đã Plus / hết lượt → ngừng nhưng GIỮ entry (để không restart mỗi giây).
+    if (j.plan_check && j.plan_check.is_plus) { st.timer = null; return; }
+    if (st.count >= PLAN_POLL_MAX) { st.timer = null; return; }
+
+    triggerPlanCheck(jobId, { force: true }).then((fired) => {
+      if (!_planPollState.has(jobId)) return;  // bị cleanup giữa chừng
+      if (fired) st.count += 1;  // chỉ đếm lần check THẬT
+      const after = state.jobs.get(jobId);
+      if (!after || after.status !== 'success') { _stopPlanPoll(jobId); return; }
+      if ((after.plan_check && after.plan_check.is_plus) || st.count >= PLAN_POLL_MAX) {
+        st.timer = null;  // xong: giữ entry, không restart
+        return;
+      }
+      // Lên lịch tick kế ~20s TỪ completion (không phải timer song song).
+      st.timer = setTimeout(() => _planPollTick(jobId), PLAN_POLL_INTERVAL_MS);
     });
   }
 
@@ -263,6 +321,11 @@
       if (j.status === 'success' && j.return_url) {
         actionBtns += `<button class="icon-btn" data-action="copy-checkout" data-id="${escHtml(id)}" title="Copy checkout URL">${window.GptUi.icon('copy')}</button>`;
       }
+      // Recheck plan: force check-session ngay (bỏ qua cache), kể cả khi đã có
+      // plan_check — cho user ép kiểm tra lại sau khi UPI pump lên Plus.
+      if (j.status === 'success') {
+        actionBtns += `<button class="icon-btn upi-recheck-btn" data-action="recheck-plan" data-id="${escHtml(id)}" title="Recheck plan">${window.GptUi.icon('retry')}</button>`;
+      }
       actionBtns += `<button class="icon-btn icon-danger" data-action="remove" data-id="${escHtml(id)}" title="Remove">${window.GptUi.icon('remove')}</button>`;
 
       const amountBadge = j.amount
@@ -369,11 +432,13 @@
       const cd = fmtCountdown(exp);
       el.textContent = cd.text;
       el.classList.toggle('upi-countdown-expired', cd.expired);
-      // Vừa cross 0 → fire check-session (1 lần per job, server cache).
+      // Vừa cross 0 → khởi động auto-poll (self-guard chống spawn trùng).
+      // KHÔNG gọi triggerPlanCheck trực tiếp: hàm này chạy mỗi giây nên sẽ
+      // flood; startPlanPoll dedupe theo _planPollState.
       if (cd.expired) {
         const row = el.closest('[data-id]');
         if (row && row.dataset.id) {
-          triggerPlanCheck(row.dataset.id);
+          startPlanPoll(row.dataset.id);
         }
       }
     });
@@ -477,6 +542,8 @@
       } else if (action === 'copy-checkout') {
         const j = state.jobs.get(id);
         if (j && j.return_url) window.GptUi.copyText(j.return_url);
+      } else if (action === 'recheck-plan') {
+        triggerPlanCheck(id, { force: true });
       }
       return;
     }
@@ -627,6 +694,10 @@
     if (!prev) state.order.push(j.id);
     state.jobs.set(j.id, j);
 
+    // Job rời success (retry → running, error, …) → dừng poller để khỏi leak
+    // timer + tránh tick đọc job đã đổi trạng thái.
+    if (j.status !== 'success') _stopPlanPoll(j.id);
+
     // Job retry (mất has_qr) hoặc QR mới (finished_at đổi) → revoke entry cũ.
     if (prev && prev.has_qr && (!j.has_qr || prev.finished_at !== j.finished_at)) {
       revokeQrBlob(j.id);
@@ -661,6 +732,7 @@
     state.jobs.delete(jobId);
     state.order = state.order.filter((id) => id !== jobId);
     revokeQrBlob(jobId);
+    _stopPlanPoll(jobId);  // dọn timer poll (H1: callback sau remove sẽ TypeError + leak)
     if (state.activeJobId === jobId) { state.activeJobId = null; renderLog(null); }
     if (_modalActiveJobId === jobId) closeQrModal();
     renderJobs();

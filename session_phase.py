@@ -14,6 +14,7 @@ Flow:
 from __future__ import annotations
 
 import asyncio
+import re
 import shutil
 import time
 import uuid
@@ -682,6 +683,158 @@ async def fetch_session_via_http(
         raise SessionError("accessToken thiếu hoặc rỗng")
 
     return data
+
+
+# JWT/access-token có prefix "eyJ". Scrub khỏi error message trước khi raise:
+# check_plan log lỗi qua _job_log → broadcast SSE tới mọi client, nên token
+# tuyệt đối không được lọt vào chuỗi lỗi.
+_JWT_TOKEN_RE = re.compile(r"eyJ[A-Za-z0-9_\-]+(?:\.[A-Za-z0-9_\-]+)*")
+
+
+def _scrub_jwt(text: str) -> str:
+    return _JWT_TOKEN_RE.sub("eyJ…[REDACTED]", text)
+
+
+def _parse_entitlement_plan(data: dict[str, Any]) -> dict[str, Any]:
+    """Parse entitlement block từ /backend-api/accounts/check/v4 → plan dict.
+
+    Pure (không network) nên dễ unit-test. Shape thực tế đã verify:
+        accounts.default.entitlement.{subscription_plan, has_active_subscription,
+                                      expires_at, subscription_id}
+
+    ``subscription_plan`` (vd ``chatgptplusplan``) → label gọn: bỏ prefix
+    ``chatgpt`` + suffix ``plan`` → ``plus`` / ``free`` / ``team`` / ``pro`` …
+
+    ``is_plus`` strict Plus-only: chỉ True khi subscription active VÀ label là
+    đúng ``plus`` — Pro/Team/Enterprise active KHÔNG tính là Plus (badge dành
+    riêng nhãn Plus; auto-poll chỉ dừng khi thấy Plus thật).
+
+    Mọi shape thiếu/sai → trả blank (không raise) để caller fail-soft.
+    """
+    blank = {"plan": None, "is_plus": False, "has_active_subscription": False, "expires": None}
+    if not isinstance(data, dict):
+        return blank
+    accounts = data.get("accounts")
+    if not isinstance(accounts, dict) or not accounts:
+        return blank
+    acct = accounts.get("default")
+    if not isinstance(acct, dict):
+        # Không có key "default" → lấy account đầu tiên là dict.
+        acct = next((v for v in accounts.values() if isinstance(v, dict)), None)
+    if not isinstance(acct, dict):
+        return blank
+    ent = acct.get("entitlement")
+    if not isinstance(ent, dict):
+        return blank
+
+    raw_plan = ent.get("subscription_plan")
+    label: str | None = None
+    if isinstance(raw_plan, str) and raw_plan.strip():
+        s = raw_plan.strip().lower()
+        if s.startswith("chatgpt"):
+            s = s[len("chatgpt"):]
+        if s.endswith("plan"):
+            s = s[: -len("plan")]
+        label = s or None
+
+    has_active = bool(ent.get("has_active_subscription"))
+    return {
+        "plan": label,
+        "is_plus": has_active and label == "plus",
+        "has_active_subscription": has_active,
+        "expires": ent.get("expires_at"),
+    }
+
+
+async def fetch_account_entitlement(
+    *,
+    access_token: str,
+    cookies: Any = None,
+    proxy: str | None = None,
+    timeout: float = 20.0,
+    impersonate: str | None = None,
+) -> dict[str, Any]:
+    """GET /backend-api/accounts/check/v4 → đọc entitlement plan LIVE.
+
+    Khác ``fetch_session_via_http`` (đọc ``/api/auth/session`` cache, lag so với
+    subscription thật): endpoint này đọc entitlement trực tiếp từ backend nên
+    phản ánh upgrade Plus ngay cả khi accessToken được mint *trước* lúc upgrade.
+
+    Auth = Bearer accessToken với **header recipe backend-api đầy đủ** (Origin +
+    x-openai-target-path/route + OAI-Language + UA/sec-ch-ua persona). Recipe
+    tối giản (chỉ Bearer + UA) bị Cloudflare chặn 403 — đã verify thực tế.
+
+    Args:
+        access_token: JWT accessToken (login token đủ để auth Bearer).
+        cookies: optional, gắn thêm Cookie header (verify cho thấy KHÔNG cần,
+            Bearer-only đã 200; giữ optional để dự phòng).
+        proxy: HTTP/HTTPS proxy URL (proxy đã mint token); None = IP trần (đã
+            verify no-proxy vẫn 200, không bắt buộc route qua proxy).
+        timeout: request timeout (giây). Mặc định 20s (KHÁC ``fetch_session_via_http``
+            mặc định 30s — đừng nhầm).
+        impersonate: curl_cffi impersonate key. None → persona primary.
+
+    Returns:
+        dict ``{plan, is_plus, has_active_subscription, expires}`` qua
+        ``_parse_entitlement_plan``.
+
+    Raises:
+        SessionError: token rỗng, network error, non-200, hoặc JSON parse fail.
+            Error message KHÔNG kèm response body (endpoint identity/oauth có thể
+            echo token vào body) và đã scrub mọi chuỗi prefix ``eyJ``.
+    """
+    from curl_cffi.requests import AsyncSession
+    from .user_agent_profile import (
+        CURL_IMPERSONATE_PRIMARY,
+        SEC_CH_UA,
+        SEC_CH_UA_MOBILE,
+        SEC_CH_UA_PLATFORM,
+        WINDOWS_USER_AGENT,
+    )
+
+    if not isinstance(access_token, str) or not access_token.strip():
+        raise SessionError("access_token thiếu hoặc rỗng")
+
+    if impersonate is None:
+        impersonate = CURL_IMPERSONATE_PRIMARY
+
+    url = "https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27"
+    target = "/backend-api/accounts/check/v4-2023-04-27"
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "*/*",
+        "Accept-Language": "en-IN,en;q=0.9",
+        "Origin": "https://chatgpt.com",
+        "Referer": "https://chatgpt.com/",
+        "User-Agent": WINDOWS_USER_AGENT,
+        "sec-ch-ua": SEC_CH_UA,
+        "sec-ch-ua-mobile": SEC_CH_UA_MOBILE,
+        "sec-ch-ua-platform": SEC_CH_UA_PLATFORM,
+        "x-openai-target-path": target,
+        "x-openai-target-route": target,
+        "OAI-Language": "en-IN",
+    }
+    cookie_header = _cookies_to_header(cookies) if cookies else ""
+    if cookie_header:
+        headers["Cookie"] = cookie_header
+
+    proxies = {"http": proxy, "https": proxy} if proxy else None
+    async with AsyncSession(impersonate=impersonate, proxies=proxies) as sess:
+        try:
+            resp = await sess.get(url, headers=headers, timeout=timeout)
+        except Exception as exc:
+            raise SessionError(f"network error: {_scrub_jwt(str(exc))}") from exc
+
+    # Chỉ kèm status code, KHÔNG response body — body có thể echo lại token.
+    if resp.status_code != 200:
+        raise SessionError(f"HTTP {resp.status_code}")
+
+    try:
+        data = resp.json()
+    except Exception as exc:
+        raise SessionError(f"JSON parse fail: {_scrub_jwt(str(exc))}") from exc
+
+    return _parse_entitlement_plan(data)
 
 
 # ─────────────────────────────────────────────────────────────────────
