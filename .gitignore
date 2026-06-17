@@ -95,3 +95,4 @@ plans
 # Real account credentials — NEVER commit (password / refresh_token / 2FA)
 test/accounts_cleaned.txt
 test/check_clean_credentials.py
+rust_upi_bot/target
