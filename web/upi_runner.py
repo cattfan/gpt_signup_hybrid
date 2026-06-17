@@ -11,7 +11,8 @@ account. Logic giống probe nhưng:
             bao giờ fatal-break vì backend_exception flaky; loop chỉ dừng
             khi approved hoặc hết approve_retries),
         confirm_variants=("qr_code", "empty", "flow_qr", "intent")
-    - Configurable: approve_retries (caller truyền vào).
+    - Configurable: approve_retries, restart_threshold, max_restarts
+        (caller truyền vào — đọc từ Settings Store).
 
 Public:
     run_upi_qr_probe(...)           — entry point per-job
@@ -49,6 +50,26 @@ APPROVE_PROXY_BATCH: int = 3
 # threshold này, nên vẫn skip qua proxy đang bị Stripe throttle bình thường.
 # Đặt > 0 chỉ khi cần kill switch chống loop vô tận trong môi trường test.
 APPROVE_BACKEND_EXCEPTION_CONSECUTIVE: int = 0
+# Default per-call cho restart loop. Caller (UpiJobManager) sẽ override từ
+# Settings Store nên không nên dựa vào module constants này ở runtime.
+#   restart_threshold = số `result=exception` LIÊN TIẾP trước khi restart
+#       checkout session. 0 = disabled (giữ behavior cũ, không restart).
+#   max_restarts      = số lần restart tối đa trong 1 job. Hết quota mà vẫn
+#       dính exception → fatal break.
+# Mục tiêu: khi Stripe approve stuck `exception` cả trăm cái liên tục, tạo
+# checkout session mới (giữ login + giữ retry budget cộng dồn) để "wash"
+# state phía Stripe thay vì đốt retry budget vô ích.
+APPROVE_RESTART_THRESHOLD: int = 30
+APPROVE_MAX_RESTARTS: int = 3
+# Network outage detection — tránh đốt retry budget khi mất mạng/DNS down.
+# Khi N timeout/connection-error LIÊN TIẾP → pause approve loop, poll
+# connectivity tới `chatgpt.com` mỗi POLL_SECONDS, max wait MAX_WAIT_SECONDS.
+# Recovery → reset network counter, tiếp tục. Hết max wait → fatal break.
+# Trong lúc pause, KHÔNG tăng `approve_index_total` (không đốt budget).
+NETWORK_FAIL_DETECT: int = 3
+NETWORK_RECOVERY_POLL_SECONDS: float = 5.0
+NETWORK_RECOVERY_MAX_WAIT_SECONDS: float = 600.0
+NETWORK_PROBE_TIMEOUT_SECONDS: float = 5.0
 CONFIRM_VARIANTS: tuple[str, ...] = ("qr_code", "empty", "flow_qr", "intent")
 
 LogFn = Callable[[str], None]
@@ -80,6 +101,7 @@ class UpiQrResult:
     page_refresh_attempts: list[dict[str, Any]] = field(default_factory=list)
     error: str | None = None
     backend_exception_count: int = 0
+    restart_count: int = 0
     elapsed_seconds: float = 0.0
     # Auth artifacts để re-check session sau khi QR hết hạn (in-memory, KHÔNG
     # đưa vào to_dict() — caller giữ riêng, không leak ra JSON SSE/snapshot).
@@ -105,6 +127,7 @@ class UpiQrResult:
             "page_refresh_attempts": self.page_refresh_attempts,
             "error": self.error,
             "backend_exception_count": self.backend_exception_count,
+            "restart_count": self.restart_count,
             "elapsed_seconds": round(self.elapsed_seconds, 2),
         }
 
@@ -356,7 +379,9 @@ def _render_qr_png(payload: str, out_path: Path) -> None:
 
 def _summarize_confirm(attempts: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [
-        {key: a.get(key) for key in ("variant", "http_status", "ok", "keys", "error")}
+        {key: a.get(key) for key in (
+            "variant", "phase", "http_status", "ok", "keys", "error",
+        )}
         for a in attempts
     ]
 
@@ -366,7 +391,7 @@ def _summarize_approve(attempts: list[dict[str, Any]]) -> list[dict[str, Any]]:
         {
             key: a.get(key)
             for key in (
-                "variant", "attempt", "proxy", "http_status", "ok",
+                "variant", "attempt", "phase", "proxy", "http_status", "ok",
                 "result", "error_type", "error", "keys",
             )
         }
@@ -948,6 +973,69 @@ def _is_backend_exception(attempt: dict[str, Any]) -> bool:
     return attempt.get("http_status") == 200 and attempt.get("result") == "exception"
 
 
+def _is_network_error(attempt: dict[str, Any]) -> bool:
+    """Attempt fail vì network/timeout/DNS — KHÔNG có response từ server.
+
+    Phân biệt với 4xx/5xx (proxy block hoặc Stripe transient): network error
+    có ``http_status is None`` (vì except block trong approve không có resp).
+    """
+    return attempt.get("http_status") is None
+
+
+async def _probe_connectivity(sess: Any) -> bool:
+    """Best-effort check kết nối ra Internet (DIRECT, không proxy).
+
+    Trả True nếu nhận được BẤT KỲ HTTP response nào từ chatgpt.com (kể cả
+    4xx/5xx — server alive). False khi network/DNS/timeout fail.
+    """
+    try:
+        resp = await sess.head(
+            "https://chatgpt.com/",
+            timeout=NETWORK_PROBE_TIMEOUT_SECONDS,
+            proxies=None,
+            allow_redirects=False,
+        )
+        # Bất cứ status code nào (200, 301, 403, 502...) đều chứng tỏ mạng OK.
+        return getattr(resp, "status_code", None) is not None
+    except Exception:  # noqa: BLE001
+        return False
+
+
+async def _wait_network_recovery(sess: Any, log: LogFn) -> bool:
+    """Pause approve loop, poll connectivity tới khi mạng OK hoặc timeout.
+
+    Returns:
+        True  — mạng đã recover, caller resume bình thường.
+        False — vượt quá NETWORK_RECOVERY_MAX_WAIT_SECONDS, caller fatal-break.
+    """
+    started = monotonic()
+    poll_idx = 0
+    while True:
+        elapsed = monotonic() - started
+        if elapsed > NETWORK_RECOVERY_MAX_WAIT_SECONDS:
+            log(_fmt_step(
+                "net", "outage", "fail",
+                f"không recover trong {NETWORK_RECOVERY_MAX_WAIT_SECONDS:.0f}s",
+            ))
+            return False
+        ok = await _probe_connectivity(sess)
+        poll_idx += 1
+        if ok:
+            log(_fmt_step(
+                "net", "recovered", "ok",
+                f"sau {elapsed:.0f}s ({poll_idx} probes) — resume approve loop",
+            ))
+            return True
+        # Log gọn mỗi N lần để khỏi spam
+        if poll_idx == 1 or poll_idx % 6 == 0:  # lần đầu + mỗi ~30s
+            log(_fmt_step(
+                "net", "waiting", "info",
+                f"poll {poll_idx} elapsed={elapsed:.0f}s "
+                f"max={NETWORK_RECOVERY_MAX_WAIT_SECONDS:.0f}s",
+            ))
+        await asyncio.sleep(NETWORK_RECOVERY_POLL_SECONDS)
+
+
 # ─────────────────────────────────────────────────────────────────────
 # Public entry point
 # ─────────────────────────────────────────────────────────────────────
@@ -963,6 +1051,9 @@ async def run_upi_qr_probe(
     qr_out_path: Path,
     log: LogFn,
     db_path: str | None = None,  # noqa: ARG001 — proxy pool truyền trực tiếp
+    restart_threshold: int = 0,
+    max_restarts: int = 0,
+    proxy_from_step: int = PROXY_FROM_STEP,
 ) -> UpiQrResult:
     """Login + checkout + confirm UPI + approve loop → save QR PNG.
 
@@ -972,7 +1063,17 @@ async def run_upi_qr_probe(
         proxy_pool: list proxy URL (đã normalize) để xoay vòng. Empty = direct.
         approve_retries: số lần retry approve (>=1).
         qr_out_path: PNG file path để lưu QR (sẽ tự tạo parent dir).
-        log: callable(str) — mỗi dòng log gọi callback này.
+        log: callable(str) — mỗi dòng log gọi callback this.
+        restart_threshold: số `result=exception` LIÊN TIẾP để trigger restart
+            checkout session (giữ login + giữ retry budget cộng dồn). 0 =
+            disabled.
+        max_restarts: số lần restart tối đa trong 1 job. Hết quota → fatal
+            break. 0 = disabled.
+        proxy_from_step: 1-6, step bắt đầu áp proxy cho flow (đồng bộ
+            `pay_upi_http._ProxyPolicy` schema). Default lấy từ
+            ``PROXY_FROM_STEP`` constant để giữ backward-compat. Khi =1, step
+            1 (login) cũng route qua ``proxy_pool[0]``; ngược lại login
+            DIRECT.
 
     Returns:
         UpiQrResult — luôn trả (kể cả khi fail), KHÔNG raise. Caller check
@@ -980,6 +1081,16 @@ async def run_upi_qr_probe(
     """
     if approve_retries < 1:
         raise UpiQrError(f"approve_retries phải >= 1, got {approve_retries}")
+    if restart_threshold < 0:
+        raise UpiQrError(f"restart_threshold phải >= 0, got {restart_threshold}")
+    if max_restarts < 0:
+        raise UpiQrError(f"max_restarts phải >= 0, got {max_restarts}")
+    if not (1 <= proxy_from_step <= 6):
+        raise UpiQrError(
+            f"proxy_from_step phải trong [1, 6], got {proxy_from_step}"
+        )
+    # Restart logic chỉ kích hoạt khi cả 2 > 0.
+    restart_enabled = restart_threshold > 0 and max_restarts > 0
 
     started = monotonic()
     masked_email = _mask_email(email)
@@ -1000,8 +1111,11 @@ async def run_upi_qr_probe(
         ("approve_retries", approve_retries),
         ("delay", f"{APPROVE_DELAY:g}s"),
         ("batch", APPROVE_PROXY_BATCH),
+        ("proxy_from_step", proxy_from_step),
         ("be_consec", APPROVE_BACKEND_EXCEPTION_CONSECUTIVE
                       if APPROVE_BACKEND_EXCEPTION_CONSECUTIVE > 0 else "off"),
+        ("restart", (f"{restart_threshold}/{max_restarts}"
+                     if restart_enabled else "off")),
         ("variants", ",".join(CONFIRM_VARIANTS)),
     )))
 
@@ -1039,13 +1153,18 @@ async def run_upi_qr_probe(
     _safe_log(_fmt_step("1/6", "login", "start", "pure-HTTP request_phase"))
     session_data: dict[str, Any] | None = None
     last_login_error: str | None = None
+    # Khi from_step=1 → step 1 (login) cũng phải route qua proxy IN, đồng bộ
+    # với `pay_upi_http._ProxyPolicy` semantics. Step >= 2 → DIRECT (giữ
+    # behavior cũ — login pure-HTTP đến auth.openai.com thường chấp nhận IP
+    # host).
+    login_proxy = first_proxy if (proxy_from_step <= 1 and first_proxy) else None
     for login_attempt in range(1, LOGIN_MAX_ATTEMPTS + 1):
         try:
             session_data = await get_session_pure_request(
                 email=email,
                 password=password,
                 secret=secret,
-                proxy=None,
+                proxy=login_proxy,
                 log=_safe_log,
             )
             if login_attempt > 1:
@@ -1107,101 +1226,211 @@ async def run_upi_qr_probe(
     upi_uri: str | None = None
     qr_expires_at: int | None = None
 
+    # ─────────────────────────────────────────────────────────────────
+    # Step 2-6 — bọc trong restart loop. Mỗi "phase" tạo 1 checkout session
+    # mới (giữ login + retry budget cộng dồn). Khi `consecutive_backend_
+    # exception >= restart_threshold` và còn quota `max_restarts` → break
+    # approve loop, sang phase kế. KHÔNG reset `approve_index_total` và
+    # `proxy_virtual_attempt`.
+    # ─────────────────────────────────────────────────────────────────
+    profile = random_india_profile()  # đồng nhất profile mọi phase
+    token_config = None  # extract 1 lần ở phase 1, các phase sau reuse
+    final_confirmed = False
+    final_approved = False
+    approved = False
+    approve_index_total = 0    # cumulative qua phase — KHÔNG reset
+    proxy_virtual_attempt = 0  # cumulative qua phase — KHÔNG reset
+    restart_count = 0
+    triggered_restart = False
+    # Per-phase context (overwrite mỗi phase) — giữ ở scope ngoài để
+    # aggregate matches dùng phase cuối.
+    checkout: dict[str, Any] = {}
+    init_data: dict[str, Any] = {}
+    elements_data: dict[str, Any] = {}
+    publishable_key = ""
+    _proxy_advance_enabled_static = (
+        proxy_from_step <= 6
+        and APPROVE_PROXY_BATCH > 1
+        and len(proxy_pool) > 1
+    )
+
     async with AsyncSession(impersonate=_IMPERSONATE) as sess:
-        # Step 2 — checkout creation (DIRECT - chatgpt API).
-        checkout = await _create_chatgpt_checkout(
-            sess, access_token=access_token, log=_silent,
-            proxies=_proxy_dict(first_proxy if PROXY_FROM_STEP <= 2 else None),
-        )
-        session_id = checkout["checkout_session_id"]
-        return_url = _stripe_return_url(session_id)
-        publishable_key = checkout["publishable_key"]
-        _safe_log(_fmt_step("2/6", "checkout", "ok",
-                            f"cs={_short(session_id, 14)}  ui={checkout.get('checkout_ui_mode') or '-'}"))
+        while True:
+            phase_idx = restart_count + 1  # 1-based
+            phase_tag = f" [p{phase_idx}]" if restart_enabled else ""
+            triggered_restart = False  # reset per-phase
 
-        # Step 3 — Stripe init.
-        init_data = await _stripe_init(
-            sess,
-            session_id=session_id,
-            publishable_key=publishable_key,
-            stripe_js_id=stripe_js_id,
-            log=_silent,
-            proxies=_proxy_for_step(first_proxy, from_step=PROXY_FROM_STEP, step=3),
-        )
-        amount = _extract_amount(init_data)
-        _safe_log(_fmt_step("3/6", "init", "ok",
-                            f"amount={amount}  ppage={_short(init_data.get('id') or '', 12)}"))
-        if PROMO and amount > 0:
-            _safe_log(_fmt_step("upi", "no free offer", "fail",
-                                f"amount={amount} (promo bật nhưng > 0)"))
-            return UpiQrResult(
-                ok=False, email=masked_email, amount=amount, return_url=return_url,
-                checkout_session=str(session_id)[:18] + "...",
-                error="no free offer (promo enabled but amount > 0)",
-                elapsed_seconds=monotonic() - started,
-            )
+            if restart_count > 0:
+                _safe_log(_fmt_step(
+                    "upi", "restart", "info",
+                    f"phase {phase_idx}/{max_restarts + 1}  → new checkout session  "
+                    f"approve_idx kept at {approve_index_total}/{approve_retries}",
+                ))
 
-        # Step 4 — elements/sessions.
-        elements_data = await _stripe_elements_session(
-            sess,
-            session_id=session_id,
-            publishable_key=publishable_key,
-            stripe_js_id=stripe_js_id,
-            amount=amount,
-            log=_silent,
-            proxies=_proxy_for_step(first_proxy, from_step=PROXY_FROM_STEP, step=4),
-        )
-        _safe_log(_fmt_step("4/6", "elements", "ok",
-                            f"session={_short(elements_data.get('session_id') or '', 14)}"))
+            # Step 2 — checkout creation (DIRECT - chatgpt API).
+            try:
+                checkout = await _create_chatgpt_checkout(
+                    sess, access_token=access_token, log=_silent,
+                    proxies=_proxy_dict(first_proxy if proxy_from_step <= 2 else None),
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Phase 1 fail → propagate (giữ behavior cũ là raise).
+                # Phase >1 fail → fatal restart, không retry tiếp.
+                if restart_count == 0:
+                    raise
+                fatal_approve_error = (
+                    f"phase {phase_idx} checkout fail: "
+                    f"{type(exc).__name__}: {str(exc)[:200]}"
+                )
+                _safe_log(_fmt_step(f"2/6{phase_tag}", "checkout", "fail",
+                                    fatal_approve_error[:160]))
+                break
 
-        # Step 5a — extract Stripe token config (best-effort).
-        token_config = None
-        try:
-            token_config = await _st.extract_config_live(
-                sess, log=_silent, use_cache=True,
-                fallback_dir=Path(__file__).resolve().parents[1]
-                / "runtime" / "cache" / "stripe_bundles_default",
-                proxies=None,
-            )
-            _safe_log(_fmt_step("5a", "token-config", "ok",
-                                f"shift={token_config.shift}  rv={_short(token_config.rv, 8)}"))
-        except _st.StripeTokenExtractError as exc:
-            _safe_log(_fmt_step("5a", "token-config", "warn", f"extract fail: {str(exc)[:120]}"))
+            session_id = checkout["checkout_session_id"]
+            return_url = _stripe_return_url(session_id)
+            publishable_key = checkout["publishable_key"]
+            _safe_log(_fmt_step(
+                f"2/6{phase_tag}", "checkout", "ok",
+                f"cs={_short(session_id, 14)}  ui={checkout.get('checkout_ui_mode') or '-'}",
+            ))
 
-        # Step 5b — confirm variants.
-        profile = random_india_profile()
-        final_confirmed = False    # ít nhất 1 variant confirm OK
-        final_approved = False     # approve trả result=approved trong loop
-        for variant in CONFIRM_VARIANTS:
-            attempt = await _stripe_confirm_upi_qr(
-                sess,
-                session_id=session_id,
-                publishable_key=publishable_key,
-                stripe_js_id=stripe_js_id,
-                init_data=init_data,
-                elements_data=elements_data,
-                profile=profile,
-                email=email,
-                amount=amount,
-                variant=variant,
-                log=_silent,
-                token_config=token_config,
-                proxies=_proxy_for_step(first_proxy, from_step=PROXY_FROM_STEP, step=5),
-            )
-            confirm_attempts.append(attempt)
-            confirm_status = "ok" if attempt.get("ok") else "fail"
-            confirm_detail = f"variant={variant}  http={attempt.get('http_status')}"
-            err = attempt.get("error")
-            if err and isinstance(err, dict):
-                code = err.get("code") or err.get("type") or ""
-                if code:
-                    confirm_detail += f"  err={code}"
-            _safe_log(_fmt_step("5b", "confirm", confirm_status, confirm_detail))
-            if not attempt.get("ok"):
-                continue
+            # Step 3 — Stripe init.
+            try:
+                init_data = await _stripe_init(
+                    sess,
+                    session_id=session_id,
+                    publishable_key=publishable_key,
+                    stripe_js_id=stripe_js_id,
+                    log=_silent,
+                    proxies=_proxy_for_step(first_proxy, from_step=proxy_from_step, step=3),
+                )
+            except Exception as exc:  # noqa: BLE001
+                if restart_count == 0:
+                    raise
+                fatal_approve_error = (
+                    f"phase {phase_idx} init fail: "
+                    f"{type(exc).__name__}: {str(exc)[:200]}"
+                )
+                _safe_log(_fmt_step(f"3/6{phase_tag}", "init", "fail",
+                                    fatal_approve_error[:160]))
+                break
+            amount = _extract_amount(init_data)
+            _safe_log(_fmt_step(
+                f"3/6{phase_tag}", "init", "ok",
+                f"amount={amount}  ppage={_short(init_data.get('id') or '', 12)}",
+            ))
+            if PROMO and amount > 0:
+                _safe_log(_fmt_step("upi", "no free offer", "fail",
+                                    f"amount={amount} (promo bật nhưng > 0)"))
+                if restart_count == 0:
+                    return UpiQrResult(
+                        ok=False, email=masked_email, amount=amount, return_url=return_url,
+                        checkout_session=str(session_id)[:18] + "...",
+                        error="no free offer (promo enabled but amount > 0)",
+                        elapsed_seconds=monotonic() - started,
+                    )
+                fatal_approve_error = (
+                    f"phase {phase_idx} no free offer (amount={amount})"
+                )
+                break
+
+            # Step 4 — elements/sessions.
+            try:
+                elements_data = await _stripe_elements_session(
+                    sess,
+                    session_id=session_id,
+                    publishable_key=publishable_key,
+                    stripe_js_id=stripe_js_id,
+                    amount=amount,
+                    log=_silent,
+                    proxies=_proxy_for_step(first_proxy, from_step=proxy_from_step, step=4),
+                )
+            except Exception as exc:  # noqa: BLE001
+                if restart_count == 0:
+                    raise
+                fatal_approve_error = (
+                    f"phase {phase_idx} elements fail: "
+                    f"{type(exc).__name__}: {str(exc)[:200]}"
+                )
+                _safe_log(_fmt_step(f"4/6{phase_tag}", "elements", "fail",
+                                    fatal_approve_error[:160]))
+                break
+            _safe_log(_fmt_step(
+                f"4/6{phase_tag}", "elements", "ok",
+                f"session={_short(elements_data.get('session_id') or '', 14)}",
+            ))
+
+            # Step 5a — extract Stripe token config (best-effort, chỉ phase 1).
+            if restart_count == 0:
+                try:
+                    token_config = await _st.extract_config_live(
+                        sess, log=_silent, use_cache=True,
+                        fallback_dir=Path(__file__).resolve().parents[1]
+                        / "runtime" / "cache" / "stripe_bundles_default",
+                        proxies=None,
+                    )
+                    _safe_log(_fmt_step(
+                        "5a", "token-config", "ok",
+                        f"shift={token_config.shift}  rv={_short(token_config.rv, 8)}",
+                    ))
+                except _st.StripeTokenExtractError as exc:
+                    _safe_log(_fmt_step(
+                        "5a", "token-config", "warn",
+                        f"extract fail: {str(exc)[:120]}",
+                    ))
+
+            # Step 5b — confirm variants. Mỗi phase thử lại từ đầu list.
+            phase_confirmed = False
+            confirm_variant_used: str | None = None
+            for variant in CONFIRM_VARIANTS:
+                attempt = await _stripe_confirm_upi_qr(
+                    sess,
+                    session_id=session_id,
+                    publishable_key=publishable_key,
+                    stripe_js_id=stripe_js_id,
+                    init_data=init_data,
+                    elements_data=elements_data,
+                    profile=profile,
+                    email=email,
+                    amount=amount,
+                    variant=variant,
+                    log=_silent,
+                    token_config=token_config,
+                    proxies=_proxy_for_step(first_proxy, from_step=proxy_from_step, step=5),
+                )
+                attempt["phase"] = phase_idx
+                confirm_attempts.append(attempt)
+                confirm_status = "ok" if attempt.get("ok") else "fail"
+                confirm_detail = f"variant={variant}  http={attempt.get('http_status')}"
+                err = attempt.get("error")
+                if err and isinstance(err, dict):
+                    code = err.get("code") or err.get("type") or ""
+                    if code:
+                        confirm_detail += f"  err={code}"
+                _safe_log(_fmt_step(f"5b{phase_tag}", "confirm", confirm_status, confirm_detail))
+                if attempt.get("ok"):
+                    phase_confirmed = True
+                    confirm_variant_used = variant
+                    break
+
+            if not phase_confirmed:
+                if restart_count == 0:
+                    # Phase 1 confirm fail mọi variant → behavior cũ:
+                    # final_confirmed=False, fall through aggregate (QR có thể
+                    # vẫn pop từ confirm response payload), error sẽ là
+                    # "confirm thất bại với mọi variant".
+                    break
+                fatal_approve_error = (
+                    f"phase {phase_idx} confirm fail mọi variant"
+                )
+                _safe_log(_fmt_step(
+                    f"5b{phase_tag}", "confirm", "fail",
+                    "all variants failed in restart phase",
+                ))
+                break
             final_confirmed = True
 
-            # Confirm OK → refresh + approve loop.
+            # Step 5c — refresh trước approve loop.
             refresh_attempt = await _stripe_payment_page_refresh_retry(
                 sess,
                 session_id=session_id,
@@ -1209,37 +1438,40 @@ async def run_upi_qr_probe(
                 stripe_js_id=stripe_js_id,
                 elements_data=elements_data,
                 log=_silent,
-                proxy_pool=proxy_pool if PROXY_FROM_STEP <= 5 else [],
+                proxy_pool=proxy_pool if proxy_from_step <= 5 else [],
             )
             page_refresh_attempts.append(refresh_attempt)
             _safe_log(_fmt_step(
-                "5c", "page-refresh",
+                f"5c{phase_tag}", "page-refresh",
                 "ok" if refresh_attempt.get("ok") else "fail",
                 f"http={refresh_attempt.get('http_status')}  proxy={refresh_attempt.get('proxy')}",
             ))
 
-            _safe_log(_fmt_step("6/6", "approve loop", "start",
-                                f"retries={approve_retries}  delay={APPROVE_DELAY:g}s  batch={APPROVE_PROXY_BATCH}"))
+            # Step 6 — approve loop. Cumulative counter, KHÔNG reset.
+            if restart_count == 0:
+                _safe_log(_fmt_step(
+                    "6/6", "approve loop", "start",
+                    f"retries={approve_retries}  delay={APPROVE_DELAY:g}s  "
+                    f"batch={APPROVE_PROXY_BATCH}"
+                    + (f"  restart={restart_threshold}/{max_restarts}"
+                       if restart_enabled else ""),
+                ))
+            else:
+                _safe_log(_fmt_step(
+                    f"6/6{phase_tag}", "approve loop", "info",
+                    f"resume from {approve_index_total}/{approve_retries}  "
+                    f"(consec be_excpt reset)",
+                ))
+            consecutive_backend_exception = 0  # reset đầu mỗi phase
+            consecutive_network_error = 0      # reset đầu mỗi phase
 
-            approved = False
             approve_started = monotonic()
-            # Virtual attempt counter dành riêng cho proxy selection (tách
-            # khỏi approve_index). Mỗi attempt += 1; khi gặp backend_exception
-            # ta advance qua hết phần còn lại của batch hiện tại để skip sang
-            # proxy kế ngay — tránh "đốt" threshold cho 1 proxy đang bị
-            # throttle. Indexing vẫn dùng `_proxy_url_for_retry` để giữ
-            # contract: floor((va-1)/batch) % len(pool).
-            proxy_virtual_attempt = 0
-            _proxy_advance_enabled = (
-                PROXY_FROM_STEP <= 6
-                and APPROVE_PROXY_BATCH > 1
-                and len(proxy_pool) > 1
-            )
-            for approve_index in range(1, approve_retries + 1):
+            while approve_index_total < approve_retries:
+                approve_index_total += 1
                 proxy_virtual_attempt += 1
                 approve_proxy = _proxy_url_for_retry(
                     proxy_pool,
-                    from_step=PROXY_FROM_STEP,
+                    from_step=proxy_from_step,
                     step=6,
                     attempt=proxy_virtual_attempt,
                     per_proxy_attempts=APPROVE_PROXY_BATCH,
@@ -1262,12 +1494,13 @@ async def run_upi_qr_probe(
                         "error": str(exc)[:300],
                         "data": None,
                     }
-                approve_attempt["variant"] = variant
-                approve_attempt["attempt"] = approve_index
+                approve_attempt["variant"] = confirm_variant_used
+                approve_attempt["attempt"] = approve_index_total
+                approve_attempt["phase"] = phase_idx
                 approve_attempt["proxy"] = _mask_proxy(approve_proxy)
                 approve_attempts.append(approve_attempt)
                 _safe_log(_fmt_attempt(
-                    idx=approve_index, total=approve_retries,
+                    idx=approve_index_total, total=approve_retries,
                     http_status=approve_attempt.get("http_status"),
                     result=approve_attempt.get("result") or approve_attempt.get("error_type"),
                     proxy_mask=_mask_proxy(approve_proxy),
@@ -1275,9 +1508,61 @@ async def run_upi_qr_probe(
                 if approve_attempt.get("ok"):
                     approved = True
                     break
-                if _is_backend_exception(approve_attempt):
+                # Phân loại response để counter chính xác:
+                #   - http_status=None → network/timeout/DNS error (KHÔNG có
+                #     response từ Stripe). Stripe state vẫn nguyên, KHÔNG đụng
+                #     vào consecutive_backend_exception.
+                #   - http_status=200 + result=exception → Stripe stuck. Tăng
+                #     consecutive_backend_exception, reset network counter.
+                #   - http_status=200 + result clean (approved/blocked/...) →
+                #     Stripe state OK. Reset CẢ 2 counter.
+                #   - http_status=4xx/5xx → proxy block hoặc Stripe transient.
+                #     Reset network counter (ít nhất có response), KHÔNG reset
+                #     consecutive_backend_exception (Stripe có thể vẫn stuck).
+                if _is_network_error(approve_attempt):
+                    consecutive_network_error += 1
+                    if consecutive_network_error >= NETWORK_FAIL_DETECT:
+                        _safe_log(_fmt_step(
+                            "net", "outage", "warn",
+                            f"{consecutive_network_error} timeouts/network errors "
+                            f"liên tiếp → pause approve loop, poll connectivity",
+                        ))
+                        ok_recover = await _wait_network_recovery(sess, _safe_log)
+                        if ok_recover:
+                            consecutive_network_error = 0
+                            # Resume approve loop ở attempt kế (KHÔNG đốt thêm
+                            # budget trong lúc đợi). Skip sleep cuối loop.
+                            continue
+                        fatal_approve_error = (
+                            f"network outage không recover trong "
+                            f"{NETWORK_RECOVERY_MAX_WAIT_SECONDS:.0f}s "
+                            f"(consec network errors={consecutive_network_error})"
+                        )
+                        break
+                elif _is_backend_exception(approve_attempt):
+                    consecutive_network_error = 0
                     backend_exception_count += 1
                     consecutive_backend_exception += 1
+
+                    # NEW: restart trigger — khi consecutive đạt threshold và
+                    # vẫn còn quota restart_count < max_restarts. KHÔNG reset
+                    # approve_index_total / proxy_virtual_attempt.
+                    if (
+                        restart_enabled
+                        and consecutive_backend_exception >= restart_threshold
+                        and restart_count < max_restarts
+                    ):
+                        triggered_restart = True
+                        _safe_log(_fmt_step(
+                            f"6/6{phase_tag}", "approve", "warn",
+                            f"consec be_excpt {consecutive_backend_exception}/"
+                            f"{restart_threshold} → restart "
+                            f"({restart_count + 1}/{max_restarts})",
+                        ))
+                        break
+
+                    # Hard threshold cũ (default 0 = OFF). Khi user opt-in
+                    # APPROVE_BACKEND_EXCEPTION_CONSECUTIVE > 0, sẽ fatal-break.
                     if (
                         APPROVE_BACKEND_EXCEPTION_CONSECUTIVE > 0
                         and consecutive_backend_exception
@@ -1289,38 +1574,57 @@ async def run_upi_qr_probe(
                             f"{APPROVE_BACKEND_EXCEPTION_CONSECUTIVE}) "
                             f"total_exceptions={backend_exception_count}"
                         )
-                        _safe_log(_fmt_step("6/6", "approve", "fail",
-                                            f"consec be_excpt {consecutive_backend_exception}/{APPROVE_BACKEND_EXCEPTION_CONSECUTIVE}"))
+                        _safe_log(_fmt_step(
+                            "6/6", "approve", "fail",
+                            f"consec be_excpt {consecutive_backend_exception}/"
+                            f"{APPROVE_BACKEND_EXCEPTION_CONSECUTIVE}",
+                        ))
                         break
-                    # Advance proxy ngay khi gặp backend_exception: nếu vẫn
-                    # còn trong batch hiện tại, jump tới đầu batch kế. Lần
-                    # sau += 1 sẽ trỏ vào proxy mới. Giúp tránh đốt threshold
-                    # cho 1 proxy đang bị Stripe throttle.
-                    if _proxy_advance_enabled:
+
+                    # Advance proxy ngay khi gặp backend_exception.
+                    if _proxy_advance_enabled_static:
                         current_batch = (proxy_virtual_attempt - 1) // APPROVE_PROXY_BATCH
-                        position_in_batch = proxy_virtual_attempt - current_batch * APPROVE_PROXY_BATCH
+                        position_in_batch = (
+                            proxy_virtual_attempt - current_batch * APPROVE_PROXY_BATCH
+                        )
                         if position_in_batch < APPROVE_PROXY_BATCH:
                             proxy_virtual_attempt = (current_batch + 1) * APPROVE_PROXY_BATCH
                 else:
-                    # Reset chuỗi consecutive khi gặp result không-exception
-                    # (server không stuck) — log gọn 1 dòng nếu reset thật sự xảy ra.
-                    if consecutive_backend_exception > 0:
-                        _safe_log(_fmt_step("6/6", "approve", "info",
-                                            f"reset consec be_excpt ({consecutive_backend_exception} → 0)"))
-                        consecutive_backend_exception = 0
-                if approve_index < approve_retries:
+                    http_st = approve_attempt.get("http_status")
+                    res = approve_attempt.get("result")
+                    if http_st == 200 and res and res != "exception":
+                        # Stripe trả response clean (vd "blocked") → state OK.
+                        consecutive_network_error = 0
+                        if consecutive_backend_exception > 0:
+                            _safe_log(_fmt_step(
+                                "6/6", "approve", "info",
+                                f"reset consec be_excpt "
+                                f"({consecutive_backend_exception} → 0) "
+                                f"result={res}",
+                            ))
+                            consecutive_backend_exception = 0
+                    else:
+                        # 4xx/5xx hoặc 200 thiếu result — proxy/Stripe issue.
+                        # Reset network counter (server alive), giữ stripe.
+                        consecutive_network_error = 0
+                if approve_index_total < approve_retries:
                     await asyncio.sleep(APPROVE_DELAY)
 
             approve_elapsed = monotonic() - approve_started
+
             if approved:
                 final_approved = True
-                _safe_log(_fmt_step("6/6", "approve", "ok",
-                                    f"approved at {approve_index}/{approve_retries}  ({approve_elapsed:.1f}s)"))
-            elif not fatal_approve_error:
-                _safe_log(_fmt_step("6/6", "approve", "fail",
-                                    f"không approved sau {approve_retries} attempts ({approve_elapsed:.1f}s)"))
+                _safe_log(_fmt_step(
+                    "6/6", "approve", "ok",
+                    f"approved at {approve_index_total}/{approve_retries}  "
+                    f"({approve_elapsed:.1f}s, restarts={restart_count})",
+                ))
 
-            if not fatal_approve_error and (approved or approve_attempts):
+            # Refresh post-approve (best-effort) — chỉ làm khi không restart
+            # (vì restart sẽ làm refresh ở step 5c phase kế).
+            if not triggered_restart and not fatal_approve_error and (
+                approved or approve_attempts
+            ):
                 refresh2 = await _stripe_payment_page_refresh_retry(
                     sess,
                     session_id=session_id,
@@ -1328,14 +1632,32 @@ async def run_upi_qr_probe(
                     stripe_js_id=stripe_js_id,
                     elements_data=elements_data,
                     log=_silent,
-                    proxy_pool=proxy_pool if PROXY_FROM_STEP <= 5 else [],
+                    proxy_pool=proxy_pool if proxy_from_step <= 5 else [],
                 )
                 page_refresh_attempts.append(refresh2)
                 _safe_log(_fmt_step(
-                    "5c", "page-refresh", "ok" if refresh2.get("ok") else "fail",
+                    f"5c{phase_tag}", "page-refresh",
+                    "ok" if refresh2.get("ok") else "fail",
                     f"http={refresh2.get('http_status')}  proxy={refresh2.get('proxy')}",
                 ))
-            break  # variant đầu tiên confirm OK → dừng vòng variants.
+
+            # Decide outcome of phase
+            if approved or fatal_approve_error:
+                break
+            if approve_index_total >= approve_retries:
+                # Cạn budget mà vẫn không approved → kết thúc, không restart.
+                _safe_log(_fmt_step(
+                    "6/6", "approve", "fail",
+                    f"không approved sau {approve_retries} attempts "
+                    f"({approve_elapsed:.1f}s, restarts={restart_count})",
+                ))
+                break
+            if triggered_restart:
+                restart_count += 1
+                continue
+            # Defensive: nếu không trigger gì mà loop vẫn break (không nên xảy
+            # ra trong logic hiện tại), vẫn out để tránh treo.
+            break
 
         # Aggregate matches từ mọi response (kể cả khi approve fail — QR có thể
         # đã có từ confirm response để user scan thủ công).
@@ -1365,7 +1687,7 @@ async def run_upi_qr_probe(
             target = qr_out_path.with_suffix(extension)
             qr_dl = await _download_qr_image(
                 sess, url=qr_image_url, out_path=target,
-                proxies=_proxy_for_step(first_proxy, from_step=PROXY_FROM_STEP, step=5),
+                proxies=_proxy_for_step(first_proxy, from_step=proxy_from_step, step=5),
             )
             if qr_dl.get("rendered") and qr_dl.get("path"):
                 qr_path = qr_dl["path"]
@@ -1414,7 +1736,8 @@ async def run_upi_qr_probe(
     _safe_log(_fmt_step(
         "upi", "done", "ok" if ok else "fail",
         (f"qr={'yes' if qr_path else 'no'}  approved={'yes' if final_approved else 'no'}  "
-         f"total={elapsed:.1f}s") + (f"  error={error_msg}" if error_msg else ""),
+         f"restarts={restart_count}  total={elapsed:.1f}s")
+        + (f"  error={error_msg}" if error_msg else ""),
     ))
 
     return UpiQrResult(
@@ -1434,6 +1757,7 @@ async def run_upi_qr_probe(
         approve_attempts=_summarize_approve(approve_attempts),
         page_refresh_attempts=_summarize_refresh(page_refresh_attempts),
         backend_exception_count=backend_exception_count,
+        restart_count=restart_count,
         error=error_msg,
         elapsed_seconds=elapsed,
         # Lưu auth artifacts để caller (UpiJobManager) re-check session sau
@@ -1453,6 +1777,8 @@ async def run_upi_qr_probe(
 __all__ = [
     "PROMO", "PROXY_FROM_STEP", "DO_CONFIRM", "DO_APPROVE",
     "APPROVE_DELAY", "APPROVE_PROXY_BATCH",
-    "APPROVE_BACKEND_EXCEPTION_CONSECUTIVE", "CONFIRM_VARIANTS",
+    "APPROVE_BACKEND_EXCEPTION_CONSECUTIVE",
+    "APPROVE_RESTART_THRESHOLD", "APPROVE_MAX_RESTARTS",
+    "CONFIRM_VARIANTS",
     "UpiQrResult", "UpiQrError", "run_upi_qr_probe",
 ]

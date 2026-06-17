@@ -22,6 +22,7 @@
     comboCount:    $('upi-combo-count'),
     approveRetries:$('upi-approve-retries'),
     jobTimeout:    $('upi-job-timeout'),
+    proxyFromStep: $('upi-proxy-from-step'),
     notifyToggle:  $('upi-notify-toggle'),
     jobList:       $('upi-job-list'),
     jobSummary:    $('upi-job-summary'),
@@ -500,12 +501,14 @@
       const target = _modeMap[document.getElementById('mode').value] || 1;
       const approveRetries = parseInt(dom.approveRetries.value, 10) || 500;
       const jobTimeout = parseInt(dom.jobTimeout.value, 10) || 1800;
+      const proxyFromStep = parseInt(dom.proxyFromStep.value, 10) || 3;
       await api('/api/upi/config', {
         method: 'POST',
         body: JSON.stringify({
           max_concurrent: target,
           job_timeout: jobTimeout,
           approve_retries: approveRetries,
+          proxy_from_step: proxyFromStep,
         }),
       });
       await api('/api/upi/jobs', {
@@ -556,6 +559,19 @@
     } catch (err) { console.error(err); }
   });
 
+  dom.proxyFromStep.addEventListener('change', async () => {
+    const val = parseInt(dom.proxyFromStep.value, 10);
+    if (isNaN(val) || val < 1 || val > 6) return;
+    try {
+      await api('/api/upi/config', {
+        method: 'POST', body: JSON.stringify({ proxy_from_step: val }),
+      });
+    } catch (err) {
+      console.error(err);
+      await Dialog.alert({ message: 'Không lưu được proxy_from_step: ' + err.message });
+    }
+  });
+
   dom.notifyToggle.addEventListener('change', async () => {
     const enabled = dom.notifyToggle.checked;
     try {
@@ -588,6 +604,7 @@
     state.approveRetries = snap.approve_retries || state.approveRetries;
     if (snap.approve_retries) dom.approveRetries.value = snap.approve_retries;
     if (snap.job_timeout) dom.jobTimeout.value = snap.job_timeout;
+    if (snap.proxy_from_step) dom.proxyFromStep.value = String(snap.proxy_from_step);
 
     // Revoke blob cho job không còn trong snapshot (cleanup khi server clear).
     const incomingIds = new Set(snap.jobs.map((j) => j.id));
@@ -678,6 +695,7 @@
   api('/api/upi/config').then((cfg) => {
     if (cfg.approve_retries) dom.approveRetries.value = cfg.approve_retries;
     if (cfg.job_timeout) dom.jobTimeout.value = cfg.job_timeout;
+    if (cfg.proxy_from_step) dom.proxyFromStep.value = String(cfg.proxy_from_step);
     state.approveRetries = cfg.approve_retries;
     dom.notifyToggle.checked = !!cfg.notify_enabled;
   }).catch(() => {});

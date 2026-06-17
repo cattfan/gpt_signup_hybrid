@@ -145,6 +145,8 @@ async def on_startup():
         "max_concurrent": um.max_concurrent,
         "job_timeout": um.job_timeout,
         "approve_retries": um.approve_retries,
+        "restart_threshold": um.restart_threshold,
+        "max_restarts": um.max_restarts,
         "jobs": um.list_jobs(),
     }])
 
@@ -1644,6 +1646,9 @@ class SetUpiConfigRequest(BaseModel):
     job_timeout: float | None = Field(default=None, ge=60, le=7200)
     approve_retries: int | None = Field(default=None, ge=1, le=2000)
     notify_enabled: bool | None = Field(default=None)
+    restart_threshold: int | None = Field(default=None, ge=0, le=1000)
+    max_restarts: int | None = Field(default=None, ge=0, le=100)
+    proxy_from_step: int | None = Field(default=None, ge=1, le=6)
 
 
 class SetTelegramConfigRequest(BaseModel):
@@ -1658,6 +1663,8 @@ async def list_upi_jobs() -> JSONResponse:
         "max_concurrent": um.max_concurrent,
         "job_timeout": um.job_timeout,
         "approve_retries": um.approve_retries,
+        "restart_threshold": um.restart_threshold,
+        "max_restarts": um.max_restarts,
         "jobs": um.list_jobs(),
     })
 
@@ -1757,6 +1764,9 @@ async def get_upi_config() -> JSONResponse:
         "max_concurrent": um.max_concurrent,
         "job_timeout": um.job_timeout,
         "approve_retries": um.approve_retries,
+        "restart_threshold": um.restart_threshold,
+        "max_restarts": um.max_restarts,
+        "proxy_from_step": um.proxy_from_step,
         "notify_enabled": get_telegram_notifier().enabled,
     })
 
@@ -1784,6 +1794,24 @@ async def set_upi_config(payload: SetUpiConfigRequest) -> JSONResponse:
             settings_writes["upi.approve_retries"] = payload.approve_retries
         except ValueError as exc:
             raise HTTPException(400, str(exc))
+    if payload.restart_threshold is not None:
+        try:
+            um.set_restart_threshold(payload.restart_threshold)
+            settings_writes["upi.approve.restart_threshold"] = payload.restart_threshold
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+    if payload.max_restarts is not None:
+        try:
+            um.set_max_restarts(payload.max_restarts)
+            settings_writes["upi.approve.max_restarts"] = payload.max_restarts
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+    if payload.proxy_from_step is not None:
+        try:
+            um.set_proxy_from_step(payload.proxy_from_step)
+            settings_writes["upi.proxy_from_step"] = payload.proxy_from_step
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
     if payload.notify_enabled is not None:
         get_telegram_notifier().set_enabled(payload.notify_enabled)
         settings_writes["upi.notify_enabled"] = payload.notify_enabled
@@ -1798,6 +1826,9 @@ async def set_upi_config(payload: SetUpiConfigRequest) -> JSONResponse:
         "max_concurrent": um.max_concurrent,
         "job_timeout": um.job_timeout,
         "approve_retries": um.approve_retries,
+        "restart_threshold": um.restart_threshold,
+        "max_restarts": um.max_restarts,
+        "proxy_from_step": um.proxy_from_step,
         "notify_enabled": get_telegram_notifier().enabled,
     })
 

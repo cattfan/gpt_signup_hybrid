@@ -3766,7 +3766,8 @@ def get_link_manager(job_repo: "JobRepository | None" = None) -> LinkJobManager:
 #   - Worker chạy upi_runner.run_upi_qr_probe (login + checkout + confirm + approve loop).
 #   - Hardcoded: PROMO, PROXY_FROM_STEP, DO_CONFIRM, DO_APPROVE, APPROVE_DELAY,
 #     APPROVE_PROXY_BATCH, APPROVE_BACKEND_EXCEPTION_CONSECUTIVE, CONFIRM_VARIANTS.
-#   - Configurable: max_concurrent, job_timeout, approve_retries.
+#   - Configurable: max_concurrent, job_timeout, approve_retries,
+#     restart_threshold, max_restarts.
 #   - Multi-mode → KHÔNG stagger giữa start (yêu cầu UI: "multi thì chạy luôn ko cần delay").
 #   - In-memory only (không persist DB) — UPI jobs ngắn hạn, user chạy lại được.
 
@@ -3799,6 +3800,9 @@ def _extract_plan_from_session(session_data: dict[str, Any] | None) -> str | Non
     return None
 _DEFAULT_UPI_JOB_TIMEOUT = 1800.0  # 30 phút — đủ cho 500 retries × 3s + buffer
 _DEFAULT_UPI_APPROVE_RETRIES = 500
+_DEFAULT_UPI_RESTART_THRESHOLD = 30  # consec exception trước khi restart checkout
+_DEFAULT_UPI_MAX_RESTARTS = 3        # số lần restart tối đa / job
+_DEFAULT_UPI_PROXY_FROM_STEP = 3     # giữ default cũ — step 1-2 DIRECT, 3-6 via proxy
 
 
 @dataclass
@@ -3886,6 +3890,9 @@ class UpiJobManager:
         self._max = max_concurrent
         self._job_timeout = _DEFAULT_UPI_JOB_TIMEOUT
         self._approve_retries = _DEFAULT_UPI_APPROVE_RETRIES
+        self._restart_threshold = _DEFAULT_UPI_RESTART_THRESHOLD
+        self._max_restarts = _DEFAULT_UPI_MAX_RESTARTS
+        self._proxy_from_step = _DEFAULT_UPI_PROXY_FROM_STEP
         self._tasks: dict[str, asyncio.Task] = {}
         self._job_queue: asyncio.Queue[str] = asyncio.Queue()
         self._workers: list[asyncio.Task] = []
@@ -3921,6 +3928,33 @@ class UpiJobManager:
             raise ValueError("approve_retries phải trong [1, 2000]")
         self._approve_retries = n
 
+    @property
+    def restart_threshold(self) -> int:
+        return self._restart_threshold
+
+    def set_restart_threshold(self, n: int) -> None:
+        if n < 0 or n > 1000:
+            raise ValueError("restart_threshold phải trong [0, 1000]")
+        self._restart_threshold = n
+
+    @property
+    def max_restarts(self) -> int:
+        return self._max_restarts
+
+    def set_max_restarts(self, n: int) -> None:
+        if n < 0 or n > 100:
+            raise ValueError("max_restarts phải trong [0, 100]")
+        self._max_restarts = n
+
+    @property
+    def proxy_from_step(self) -> int:
+        return self._proxy_from_step
+
+    def set_proxy_from_step(self, n: int) -> None:
+        if n < 1 or n > 6:
+            raise ValueError("proxy_from_step phải trong [1, 6]")
+        self._proxy_from_step = n
+
     def apply_settings(self, settings: dict) -> None:
         """Hydrate fields từ settings dict (startup boot)."""
         _hydrate_proxy_pool_from_settings(settings)
@@ -3936,6 +3970,18 @@ class UpiJobManager:
             val = int(settings["upi.approve_retries"])
             if 1 <= val <= 2000:
                 self._approve_retries = val
+        if "upi.approve.restart_threshold" in settings:
+            val = int(settings["upi.approve.restart_threshold"])
+            if 0 <= val <= 1000:
+                self._restart_threshold = val
+        if "upi.approve.max_restarts" in settings:
+            val = int(settings["upi.approve.max_restarts"])
+            if 0 <= val <= 100:
+                self._max_restarts = val
+        if "upi.proxy_from_step" in settings:
+            val = int(settings["upi.proxy_from_step"])
+            if 1 <= val <= 6:
+                self._proxy_from_step = val
 
     # ── SSE broadcast ───────────────────────────────────────────────────
     def _broadcast(self, event: dict[str, Any]) -> None:
@@ -4325,6 +4371,9 @@ class UpiJobManager:
                     approve_retries=self._approve_retries,
                     qr_out_path=qr_out_path,
                     log=log,
+                    restart_threshold=self._restart_threshold,
+                    max_restarts=self._max_restarts,
+                    proxy_from_step=self._proxy_from_step,
                 ),
                 timeout=self._job_timeout,
             )

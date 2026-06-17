@@ -227,6 +227,17 @@
           <span class="input-label">Timeout (s/job)</span>
           <input type="number" id="upi-job-timeout" value="1800" min="60" max="7200" step="60" />
         </label>
+        <label class="input-group config-field-short" title="Step bắt đầu áp proxy (1-6). 1 = login + checkout + stripe + approve via proxy (an toàn khi IP host non-IN). 3 = step 1-2 DIRECT, 3-6 via proxy (default — chỉ ổn nếu IP host hợp lệ).">
+          <span class="input-label">Proxy from step</span>
+          <select id="upi-proxy-from-step">
+            <option value="1">1 — login + all (full proxy)</option>
+            <option value="2">2 — checkout + later</option>
+            <option value="3" selected>3 — stripe_init + later</option>
+            <option value="4">4 — elements + later</option>
+            <option value="5">5 — confirm + approve</option>
+            <option value="6">6 — approve only</option>
+          </select>
+        </label>
         <span class="settings-divider" aria-hidden="true"></span>
         <label class="toggle-wrap" id="upi-notify-wrap" title="Bật để gửi QR + thông tin account qua Telegram khi job xong">
           <input type="checkbox" id="upi-notify-toggle" />
@@ -235,7 +246,7 @@
         </label>
         <!-- <span class="settings-divider" aria-hidden="true"></span>
         <span class="muted upi-fixed-note" title="Các biến này fix cứng trong code">
-          fixed: PROMO=1 · PROXY_FROM_STEP=3 · QR_CONFIRM=1 · QR_APPROVE=1 · APPROVE_DELAY=3s · VARIANTS=qr_code,empty,flow_qr,intent
+          fixed: PROMO=1 · QR_CONFIRM=1 · QR_APPROVE=1 · APPROVE_DELAY=3s · VARIANTS=qr_code,empty,flow_qr,intent
         </span> -->
       </div>
     </div>

@@ -69,6 +69,8 @@ _EXACT_KEYS: frozenset[str] = frozenset([
     "autoreg.logs_url", "autoreg.api_key",
     "upi.max_concurrent", "upi.job_timeout", "upi.approve_retries",
     "upi.notify_enabled",
+    "upi.approve.restart_threshold", "upi.approve.max_restarts",
+    "upi.proxy_from_step",
     "telegram.bot_token", "telegram.chat_id",
     "ui.active_tab", "ui.link_mode",
     "web.auth_token",
@@ -373,6 +375,52 @@ def _validate_type_constraint(key: str, value: Any) -> None:
         if not isinstance(value, bool):
             raise RepositoryError(
                 "set", TypeError(f"{key}: must be bool, got {type(value).__name__}")
+            )
+        return
+
+    if key == "upi.approve.restart_threshold":
+        # Số lần result=exception LIÊN TIẾP để trigger "new checkout session"
+        # (refresh state Stripe-side, giữ login + retry counter cộng dồn).
+        # 0 = disabled (no restart, behavior cũ).
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise RepositoryError(
+                "set", TypeError(f"{key}: must be int, got {type(value).__name__}")
+            )
+        if not (0 <= value <= 1000):
+            raise RepositoryError(
+                "set", ValueError(f"{key}: must be in [0, 1000], got {value}")
+            )
+        return
+
+    if key == "upi.approve.max_restarts":
+        # Số lần restart tối đa trong 1 job. 0 = disabled (no restart).
+        # Hết quota nhưng vẫn dính exception → fatal break.
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise RepositoryError(
+                "set", TypeError(f"{key}: must be int, got {type(value).__name__}")
+            )
+        if not (0 <= value <= 100):
+            raise RepositoryError(
+                "set", ValueError(f"{key}: must be in [0, 100], got {value}")
+            )
+        return
+
+    if key == "upi.proxy_from_step":
+        # Step bắt đầu áp proxy cho UPI flow (1-6) — đồng bộ với
+        # `pay_upi_http._ProxyPolicy` schema:
+        #   1 login → 2 checkout → 3 stripe_init → 4 stripe_elements
+        #   → 5 token+confirm → 6 approve
+        # Mọi step >= from_step đi via first_proxy; step nhỏ hơn DIRECT.
+        # Default 3 (giữ behavior cũ — step 1-2 DIRECT).
+        # Set =1 khi IP host không qua được chatgpt.com payment endpoint
+        # (silent timeout 30s với 0 bytes — typical case IP non-IN).
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise RepositoryError(
+                "set", TypeError(f"{key}: must be int, got {type(value).__name__}")
+            )
+        if not (1 <= value <= 6):
+            raise RepositoryError(
+                "set", ValueError(f"{key}: must be in [1, 6], got {value}")
             )
         return
 
