@@ -37,11 +37,11 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from .pay_upi_http import _ProxyPolicy, _create_chatgpt_checkout
-from .random_profile import random_india_profile
-from .session_phase import get_session_pure_request
-from .user_agent_profile import CURL_IMPERSONATE_PRIMARY as _IMPERSONATE
-from .web_recorder import (
+from pay_upi_http import _ProxyPolicy, _create_chatgpt_checkout
+from random_profile import random_india_profile
+from session_phase import get_session_pure_request
+from user_agent_profile import CURL_IMPERSONATE_PRIMARY as _IMPERSONATE
+from web_recorder import (
     ACTION_INIT_SCRIPT,
     RADIX_FONT_FIX_SCRIPT,
     RecorderLog,

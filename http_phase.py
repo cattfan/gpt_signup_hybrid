@@ -16,7 +16,7 @@ from typing import Any, Callable
 
 from curl_cffi import requests as curl_requests
 
-from .models import BrowserHandoff, SignupRequest
+from models import BrowserHandoff, SignupRequest
 
 
 class HttpPhaseError(Exception):
@@ -82,7 +82,7 @@ def _fetch_access_token(
 ) -> tuple[str | None, str | None]:
     """GET /api/auth/session với cookies đã inject. Trả về (access_token, user_id)."""
     url = f"{_CHATGPT_BASE}/api/auth/session"
-    from .user_agent_profile import (
+    from user_agent_profile import (
         SEC_CH_UA,
         SEC_CH_UA_MOBILE,
         SEC_CH_UA_PLATFORM,

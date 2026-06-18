@@ -20,17 +20,17 @@ import time
 import uuid
 from typing import Any, Callable
 
-from ._browser_retry import (
+from _browser_retry import (
     LAUNCH_RETRY_BACKOFF as _LAUNCH_RETRY_BACKOFF,
     LAUNCH_RETRY_MAX as _LAUNCH_RETRY_MAX,
     is_driver_dead_error as _is_driver_dead_error,
     is_network_error as _is_network_error,
     parse_proxy_for_playwright as _parse_proxy,
 )
-from ._nextauth_bootstrap import bootstrap_authorize_url
-from .config import ensure_runtime_dirs, load_settings, prepare_profile_dir
-from .totp_helper import generate_code
-from .user_agent_profile import CAMOUFOX_OS as _CAMOUFOX_OS
+from _nextauth_bootstrap import bootstrap_authorize_url
+from config import ensure_runtime_dirs, load_settings, prepare_profile_dir
+from totp_helper import generate_code
+from user_agent_profile import CAMOUFOX_OS as _CAMOUFOX_OS
 
 
 LogFn = Callable[[str], None]
@@ -73,7 +73,7 @@ async def _get_session_browser(
     """
     debug_keep = keep_browser_open and not headless
     if tls_insecure:
-        from .config import warn_insecure_tls
+        from config import warn_insecure_tls
         warn_insecure_tls("session_phase")
         log("[security] TLS verification DISABLED — debug mode")
 
@@ -92,7 +92,7 @@ async def _get_session_browser(
     proxy_kwargs: dict[str, Any] = {}
     if proxy:
         proxy_kwargs["proxy"] = _parse_proxy(proxy)
-        from .browser_phase import _ensure_geoip_cache
+        from browser_phase import _ensure_geoip_cache
         _ensure_geoip_cache(settings.runtime_dir, log=log)
 
     progress = {"password_submitted": False}
@@ -629,7 +629,7 @@ async def fetch_session_via_http(
         SessionError: HTTP non-200, JSON parse fail, hoặc accessToken thiếu/rỗng.
     """
     from curl_cffi.requests import AsyncSession
-    from .user_agent_profile import (
+    from user_agent_profile import (
         CURL_IMPERSONATE_PRIMARY,
         SEC_CH_UA,
         SEC_CH_UA_MOBILE,
@@ -784,7 +784,7 @@ async def fetch_account_entitlement(
             echo token vào body) và đã scrub mọi chuỗi prefix ``eyJ``.
     """
     from curl_cffi.requests import AsyncSession
-    from .user_agent_profile import (
+    from user_agent_profile import (
         CURL_IMPERSONATE_PRIMARY,
         SEC_CH_UA,
         SEC_CH_UA_MOBILE,
@@ -865,7 +865,7 @@ async def get_session_pure_request(
       8. Consume callback → session_token
       9. GET /api/auth/session → full JSON
     """
-    from .request_phase import (
+    from request_phase import (
         _create_session,
         _step_csrf,
         _step_auth_url,
@@ -882,12 +882,12 @@ async def get_session_pure_request(
         RequestPhaseError,
         USER_AGENT,
     )
-    from .user_agent_profile import (
+    from user_agent_profile import (
         SEC_CH_UA as _SEC_CH_UA,
         SEC_CH_UA_MOBILE as _SEC_CH_UA_MOBILE,
         SEC_CH_UA_PLATFORM as _SEC_CH_UA_PLATFORM,
     )
-    from .totp_helper import generate_code as _generate_totp
+    from totp_helper import generate_code as _generate_totp
     from urllib.parse import urljoin
     import asyncio as _asyncio
     from datetime import datetime, timezone

@@ -11,10 +11,10 @@ import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from .browser_phase import BrowserPhaseError, run_browser_phase
-from .config import load_settings, runtime_session_dir
-from .http_phase import HttpPhaseError, run_http_phase
-from .mail_providers import (
+from browser_phase import BrowserPhaseError, run_browser_phase
+from config import load_settings, runtime_session_dir
+from http_phase import HttpPhaseError, run_http_phase
+from mail_providers import (
     MailProvider,
     OutlookComboError,
     OutlookProviderUnavailable,
@@ -23,12 +23,12 @@ from .mail_providers import (
     build_provider_outlook,
     build_provider_worker,
 )
-from .models import SignupRequest, SignupResult
-from .random_profile import random_profile
-from .request_phase import RequestPhaseError, run_request_phase
+from models import SignupRequest, SignupResult
+from random_profile import random_profile
+from request_phase import RequestPhaseError, run_request_phase
 
 if TYPE_CHECKING:
-    from .db.repositories import ComboRepository
+    from db.repositories import ComboRepository
 
 
 def _build_mail_provider(

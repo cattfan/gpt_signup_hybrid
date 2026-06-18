@@ -34,9 +34,9 @@ from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
 
 from curl_cffi import requests as curl_requests
 
-from .mail_providers import MailProvider
-from .models import SignupRequest, SignupResult
-from .user_agent_profile import (
+from mail_providers import MailProvider
+from models import SignupRequest, SignupResult
+from user_agent_profile import (
     CURL_IMPERSONATE_CANDIDATES as _UA_IMPERSONATE_CANDIDATES,
     CURL_IMPERSONATE_PRIMARY as _UA_IMPERSONATE_PRIMARY,
     SEC_CH_UA,
@@ -138,7 +138,7 @@ def _get_sentinel_token(session, device_id: str, flow: str, log: Callable, worke
 
     if not disable_quickjs:
         try:
-            from .sentinel_quickjs import get_sentinel_token_via_quickjs
+            from sentinel_quickjs import get_sentinel_token_via_quickjs
             token = get_sentinel_token_via_quickjs(
                 session,
                 device_id,
@@ -152,7 +152,7 @@ def _get_sentinel_token(session, device_id: str, flow: str, log: Callable, worke
         except Exception as e:
             log(f"[sentinel] QuickJS import/call error, fallback: {e}")
 
-    from .sentinel_pow import get_sentinel_token as _pow_token
+    from sentinel_pow import get_sentinel_token as _pow_token
     return _pow_token(session, device_id, flow=flow)
 
 
@@ -711,7 +711,7 @@ def _run_request_phase_sync(
     try:
         # Persistent Node worker cho sentinel (warm — tránh cold-start V8 mỗi action).
         # Dùng chung cho cả sentinel #1 (register) và #2 (create_account, pre-computed).
-        from .sentinel_quickjs import create_worker as _create_sentinel_worker
+        from sentinel_quickjs import create_worker as _create_sentinel_worker
         try:
             worker = _create_sentinel_worker(log)
         except Exception as _e:

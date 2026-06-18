@@ -28,7 +28,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from .user_agent_profile import sentinel_navigator_payload as _navigator_payload
+from user_agent_profile import sentinel_navigator_payload as _navigator_payload
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +53,7 @@ def _ensure_sdk_file(session: Any, timeout_ms: int) -> Path:
     if sdk_file.exists() and sdk_file.stat().st_size > 0:
         return sdk_file
 
-    from .user_agent_profile import (
+    from user_agent_profile import (
         SEC_CH_UA,
         SEC_CH_UA_MOBILE,
         SEC_CH_UA_PLATFORM,
@@ -357,7 +357,7 @@ def _fetch_sentinel_challenge(
     request_p: str,
     timeout_ms: int,
 ) -> dict:
-    from .user_agent_profile import (
+    from user_agent_profile import (
         SEC_CH_UA,
         SEC_CH_UA_MOBILE,
         SEC_CH_UA_PLATFORM,

@@ -57,7 +57,7 @@ def _load_or_create_persisted_token() -> str:
     SSE tự reconnect, KHÔNG phải reload trang. Single source of truth là bảng
     ``settings`` (key ``web.auth_token``).
     """
-    from ..db import get_engine, get_settings_repo
+    from db import get_engine, get_settings_repo
 
     repo = get_settings_repo(get_engine())
     existing = repo.get(_SETTINGS_KEY)

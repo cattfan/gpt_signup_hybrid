@@ -42,7 +42,7 @@ from .profile_lock import ProfileLock
 from .session import launch_camoufox
 
 if TYPE_CHECKING:  # pragma: no cover
-    from ..db.repositories import AuditLogRepository, IcloudPoolRepository
+    from db.repositories import AuditLogRepository, IcloudPoolRepository
 
 
 # ─── Constants ─────────────────────────────────────────────────────────────

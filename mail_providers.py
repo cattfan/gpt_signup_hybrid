@@ -31,7 +31,7 @@ from urllib.parse import quote
 import httpx
 
 if TYPE_CHECKING:
-    from .db.repositories import ComboRepository
+    from db.repositories import ComboRepository
 
 
 _OTP_REGEX = re.compile(
@@ -119,7 +119,7 @@ class WorkerMailProvider:
         self.api_key = api_key
         self.insecure_tls = insecure_tls
         if insecure_tls:
-            from .config import warn_insecure_tls
+            from config import warn_insecure_tls
             warn_insecure_tls("mail_providers.WorkerMailProvider")
 
     @staticmethod

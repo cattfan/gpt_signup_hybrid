@@ -27,12 +27,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterator
 
-from .mail_providers import OutlookCombo, OutlookComboError
+from mail_providers import OutlookCombo, OutlookComboError
 
 if TYPE_CHECKING:
-    from .db.repositories import ComboRepository
+    from db.repositories import ComboRepository
 
-from .db.repositories import TERMINAL_ERROR_SUBSTRINGS
+from db.repositories import TERMINAL_ERROR_SUBSTRINGS
 
 # Alias cho backward compat internal usage
 _TERMINAL_ERRORS = tuple(TERMINAL_ERROR_SUBSTRINGS)

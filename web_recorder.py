@@ -413,7 +413,7 @@ async def _open_context(
         user_data_subdir: subdirectory dưới run_dir để chứa user profile.
             Mặc định 'profile' — caller có thể đổi để tách profile theo phase.
     """
-    from .config import load_settings
+    from config import load_settings
 
     settings = load_settings()
     if options.viewport is not None:
@@ -437,7 +437,7 @@ async def _open_context(
     # Proxy (opt-in) — parse string → dict cho cả camoufox + playwright.
     proxy_dict: dict[str, str] | None = None
     if options.proxy:
-        from ._browser_retry import parse_proxy_for_playwright as _parse_proxy
+        from _browser_retry import parse_proxy_for_playwright as _parse_proxy
 
         proxy_dict = _parse_proxy(options.proxy)
 

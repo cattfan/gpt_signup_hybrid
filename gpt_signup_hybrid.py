@@ -18,7 +18,7 @@ __package__ = __name__
 def main() -> None:
     # Enforce expire ngay trước khi load CLI — block sớm khi exe expired
     # mà không phải đợi typer/uvicorn import.
-    from ._expire_check import enforce_expiry
+    from _expire_check import enforce_expiry
     enforce_expiry()
     cli_mod = importlib.import_module(".cli", __name__)
     cli_mod.app()

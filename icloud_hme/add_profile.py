@@ -39,7 +39,7 @@ from .exceptions import AddProfileError, IcloudError
 from .session import launch_camoufox
 
 if TYPE_CHECKING:  # pragma: no cover
-    from ..db.repositories import AuditLogRepository, IcloudPoolRepository
+    from db.repositories import AuditLogRepository, IcloudPoolRepository
 
 
 # ─── Constants ─────────────────────────────────────────────────────────────

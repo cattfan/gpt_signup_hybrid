@@ -28,8 +28,8 @@ import argparse
 import asyncio
 from pathlib import Path
 
-from .random_profile import random_india_profile
-from .web_recorder import (
+from random_profile import random_india_profile
+from web_recorder import (
     DEFAULT_OTP_API_URL,
     DEFAULT_START_URL,
     WebRecorderOptions,

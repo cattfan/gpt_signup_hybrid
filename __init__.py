@@ -14,7 +14,7 @@ _PACKAGE_DIR = Path(__file__).resolve().parent
 if str(_PACKAGE_DIR) not in sys.path:
     sys.path.insert(0, str(_PACKAGE_DIR))
 
-from .models import SignupRequest, SignupResult, BrowserHandoff
-from .signup import run_signup
+from models import SignupRequest, SignupResult, BrowserHandoff
+from signup import run_signup
 
 __all__ = ["SignupRequest", "SignupResult", "BrowserHandoff", "run_signup"]

@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
 # annotations`` ở trên đảm bảo annotation đánh giá lazy (string), nên không
 # cần resolve symbol thực ở module load time.
 if TYPE_CHECKING:  # pragma: no cover — type-only imports
-    from ..config import Settings
+    from config import Settings
     from .checker import ProfileChecker
     from .generator import HmeGenerator
     from .manager import HmeManager

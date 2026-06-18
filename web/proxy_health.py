@@ -43,7 +43,7 @@ def _acquire_sem(n: int) -> asyncio.Semaphore:
 
 def _impersonate() -> str:
     try:
-        from ..user_agent_profile import CURL_IMPERSONATE_PRIMARY
+        from user_agent_profile import CURL_IMPERSONATE_PRIMARY
         return CURL_IMPERSONATE_PRIMARY
     except Exception:  # noqa: BLE001
         return "chrome145"

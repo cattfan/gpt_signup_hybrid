@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 if TYPE_CHECKING:
-    from ..db.repositories import ChatGptAccountRepository
+    from db.repositories import ChatGptAccountRepository
 
 _log = logging.getLogger(__name__)
 
@@ -252,10 +252,10 @@ class AutoRegRunner:
         Respects reg config: proxy, headless, job_timeout, auto_retry.
         On final failure: update icloud_emails status to 'disabled' to prevent infinite retry.
         """
-        from ..mfa_phase import MfaError, enable_2fa
-        from ..models import SignupRequest, SignupResult
-        from ..signup import run_signup
-        from ..web.mail_modes import get_spec
+        from mfa_phase import MfaError, enable_2fa
+        from models import SignupRequest, SignupResult
+        from signup import run_signup
+        from web.mail_modes import get_spec
 
         self._stats.processed += 1
         max_attempts = (self._config.auto_retry_max + 1) if self._config.auto_retry else 1
@@ -271,7 +271,7 @@ class AutoRegRunner:
                 # Build SignupRequest via worker spec — inject proxy + headless từ Settings
                 # Proxy lấy từ pool rotation (round_robin/random) để mỗi email
                 # tránh trùng IP. Pool rỗng → None (direct).
-                from ..web.manager import _resolve_job_proxy
+                from web.manager import _resolve_job_proxy
                 email_proxy = _resolve_job_proxy()
                 worker_config = self._resolve_worker_config(self._config)
                 spec = get_spec("worker")

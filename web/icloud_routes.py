@@ -35,8 +35,8 @@ from pydantic import BaseModel, Field
 # import lazy trong factory) để body parameter được bind đúng kiểu Pydantic.
 # ``from __future__ import annotations`` chỉ ảnh hưởng cách chuỗi-hoá
 # annotation, không cấm import name vào module globals.
-from ..icloud_hme.web.schemas import RunRequest, RunStatus
-from ..autoreg.schemas import AutoRegStartRequest
+from icloud_hme.web.schemas import RunRequest, RunStatus
+from autoreg.schemas import AutoRegStartRequest
 from .runner_config_store import (
     RunnerConfig,
     RunnerConfigError,
@@ -140,21 +140,21 @@ def _init_services() -> None:
     if _pool_mgr is not None:
         return
 
-    from ..config import load_settings
-    from ..db import get_engine
-    from ..db.repositories import (
+    from config import load_settings
+    from db import get_engine
+    from db.repositories import (
         AuditLogRepository,
         IcloudPoolRepository,
     )
-    from ..icloud_hme.add_profile import AddProfileService
-    from ..icloud_hme.checker import ProfileChecker
-    from ..icloud_hme.generator import HmeGenerator
-    from ..icloud_hme.manager import HmeManager
-    from ..icloud_hme.open_profile import OpenProfileService
-    from ..icloud_hme.pool import IcloudPoolManager
-    from ..icloud_hme.recorder import Recorder
-    from ..icloud_hme.runner import HmeRunner
-    from ..icloud_hme.web.log_buffer import LogBuffer, make_web_log_callback
+    from icloud_hme.add_profile import AddProfileService
+    from icloud_hme.checker import ProfileChecker
+    from icloud_hme.generator import HmeGenerator
+    from icloud_hme.manager import HmeManager
+    from icloud_hme.open_profile import OpenProfileService
+    from icloud_hme.pool import IcloudPoolManager
+    from icloud_hme.recorder import Recorder
+    from icloud_hme.runner import HmeRunner
+    from icloud_hme.web.log_buffer import LogBuffer, make_web_log_callback
 
     _settings = load_settings()
     engine = get_engine()
@@ -320,10 +320,10 @@ def _init_autoreg() -> None:
     if _autoreg_runner is not None:
         return
 
-    from ..autoreg.runner import AutoRegRunner
-    from ..db import get_engine
-    from ..db.repositories import ChatGptAccountRepository
-    from ..icloud_hme.web.log_buffer import LogBuffer, make_web_log_callback
+    from autoreg.runner import AutoRegRunner
+    from db import get_engine
+    from db.repositories import ChatGptAccountRepository
+    from icloud_hme.web.log_buffer import LogBuffer, make_web_log_callback
 
     _autoreg_log_buffer = LogBuffer()
     _log_callback = make_web_log_callback(_autoreg_log_buffer)
@@ -461,7 +461,7 @@ def build_icloud_router() -> APIRouter:
     @router.post("/profiles/add/start")
     async def add_profile_start() -> JSONResponse:
         _init_services()
-        from ..icloud_hme.add_profile import AddProfileError
+        from icloud_hme.add_profile import AddProfileError
 
         try:
             session = await _add_profile_svc.start()
@@ -497,7 +497,7 @@ def build_icloud_router() -> APIRouter:
         body: AddProfileSaveRequest | None = None,
     ) -> JSONResponse:
         _init_services()
-        from ..icloud_hme.add_profile import AddProfileError
+        from icloud_hme.add_profile import AddProfileError
 
         # Body optional — user có thể POST không kèm body khi muốn fallback
         # auto-extract. FastAPI parse body=None nếu Content-Length=0.
@@ -536,7 +536,7 @@ def build_icloud_router() -> APIRouter:
     @router.post("/profiles/add/{session_id}/cancel")
     async def add_profile_cancel(session_id: str) -> JSONResponse:
         _init_services()
-        from ..icloud_hme.add_profile import AddProfileError
+        from icloud_hme.add_profile import AddProfileError
 
         try:
             session = await _add_profile_svc.cancel(session_id)
@@ -563,7 +563,7 @@ def build_icloud_router() -> APIRouter:
         from datetime import datetime as _dt
         from datetime import timezone as _tz
 
-        from ..icloud_hme.add_profile import AddProfileError
+        from icloud_hme.add_profile import AddProfileError
 
         try:
             session = _add_profile_svc.status(session_id)
@@ -597,7 +597,7 @@ def build_icloud_router() -> APIRouter:
     @router.post("/profiles/{apple_id}/open/start")
     async def open_profile_start(apple_id: str) -> JSONResponse:
         _init_services()
-        from ..icloud_hme.exceptions import OpenProfileError
+        from icloud_hme.exceptions import OpenProfileError
 
         try:
             session = await _open_profile_svc.start(apple_id)
@@ -629,7 +629,7 @@ def build_icloud_router() -> APIRouter:
     @router.post("/profiles/{apple_id}/open/{session_id}/save")
     async def open_profile_save(apple_id: str, session_id: str) -> JSONResponse:
         _init_services()
-        from ..icloud_hme.exceptions import OpenProfileError
+        from icloud_hme.exceptions import OpenProfileError
 
         # Validate apple_id trong path khớp session.apple_id (chống user tab cũ
         # gọi nhầm session_id của apple_id khác — R15 design §17 endpoint table).
@@ -689,7 +689,7 @@ def build_icloud_router() -> APIRouter:
     @router.post("/profiles/{apple_id}/open/{session_id}/close")
     async def open_profile_close(apple_id: str, session_id: str) -> JSONResponse:
         _init_services()
-        from ..icloud_hme.exceptions import OpenProfileError
+        from icloud_hme.exceptions import OpenProfileError
 
         try:
             session = await _open_profile_svc.close(session_id)
@@ -719,7 +719,7 @@ def build_icloud_router() -> APIRouter:
         from datetime import datetime as _dt
         from datetime import timezone as _tz
 
-        from ..icloud_hme.exceptions import OpenProfileError
+        from icloud_hme.exceptions import OpenProfileError
 
         try:
             session = _open_profile_svc.status(session_id)
@@ -954,7 +954,7 @@ def build_icloud_router() -> APIRouter:
         # Acquire ngay TRƯỚC khi spawn task — nếu lock fail thì 409, KHÔNG
         # spawn task (UI sẽ retry sau). Lock release ở wrapper finally
         # block để cover cả success/error/cancel/server-shutdown path.
-        from ..icloud_hme.runner_lock import RunnerLock, RunnerLockError
+        from icloud_hme.runner_lock import RunnerLock, RunnerLockError
 
         lock = RunnerLock(_settings.runtime_dir)
         try:
@@ -1111,8 +1111,8 @@ def build_icloud_router() -> APIRouter:
             ) from None
 
         # ── Write-through to Settings_Store (R6.3) ──
-        from ..db import get_engine, get_settings_repo
-        from ..db.repositories import RepositoryError
+        from db import get_engine, get_settings_repo
+        from db.repositories import RepositoryError
 
         response_body = cfg.to_dict()
         settings_dict: dict[str, Any] = {
@@ -1149,11 +1149,11 @@ def build_icloud_router() -> APIRouter:
                 status_code=409,
             )
 
-        from ..autoreg.runner import AutoRegConfig
+        from autoreg.runner import AutoRegConfig
 
         # Load shared reg config từ Settings store (proxy, headless, timeout, retry)
-        from ..db import get_engine, get_settings_repo
-        from ..db.repositories import RepositoryError
+        from db import get_engine, get_settings_repo
+        from db.repositories import RepositoryError
 
         try:
             _repo = get_settings_repo(get_engine())
@@ -1243,8 +1243,8 @@ def build_icloud_router() -> APIRouter:
         """Paginated list ChatGPT accounts (R9.5)."""
         _init_autoreg()
 
-        from ..db import get_engine
-        from ..db.repositories import ChatGptAccountRepository
+        from db import get_engine
+        from db.repositories import ChatGptAccountRepository
 
         engine = get_engine()
         repo = ChatGptAccountRepository(engine)

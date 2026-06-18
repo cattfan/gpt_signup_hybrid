@@ -17,9 +17,9 @@ from pathlib import Path
 
 import typer
 
-from .config import env_insecure_tls, load_settings, runtime_session_dir
-from .models import SignupRequest, SignupResult
-from .signup import run_signup
+from config import env_insecure_tls, load_settings, runtime_session_dir
+from models import SignupRequest, SignupResult
+from signup import run_signup
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 
@@ -45,7 +45,7 @@ def pool_status_cmd(
 ) -> None:
     """In tóm tắt pool: bao nhiêu combo đã used / available / terminal error."""
     settings = load_settings()
-    from .outlook_pool import OutlookPoolError, parse_pool_file, status_summary
+    from outlook_pool import OutlookPoolError, parse_pool_file, status_summary
 
     pool_path = Path(pool_file)
     if not pool_path.is_absolute():
@@ -61,7 +61,7 @@ def pool_status_cmd(
     combo_repo = None
     try:
         import atexit as _atexit_ps
-        from .db import get_engine, get_repos
+        from db import get_engine, get_repos
 
         engine = get_engine(db_path)
         _atexit_ps.register(engine.close)
@@ -80,7 +80,7 @@ def totp_cmd(
     account: str | None = typer.Option(None, "--account", help="Email account để in provisioning URI (tuỳ chọn)."),
 ) -> None:
     """Gen 6-digit TOTP code từ secret base32."""
-    from .totp_helper import TotpError, generate_code, provisioning_uri, time_remaining
+    from totp_helper import TotpError, generate_code, provisioning_uri, time_remaining
 
     try:
         code = generate_code(secret)
@@ -112,7 +112,7 @@ def enable_2fa_cmd(
     factor_id, session_id, mfa_info.
     """
     import asyncio as _asyncio
-    from .mfa_phase import MfaError, enable_2fa
+    from mfa_phase import MfaError, enable_2fa
 
     settings = load_settings()
     sf_path = Path(session_file)
@@ -135,7 +135,7 @@ def enable_2fa_cmd(
 
     user_agent = sdata.get("user_agent")
     if not user_agent:
-        from .user_agent_profile import WINDOWS_USER_AGENT
+        from user_agent_profile import WINDOWS_USER_AGENT
         user_agent = WINDOWS_USER_AGENT
 
     log = _emit_log(prefix="2fa")
@@ -147,7 +147,7 @@ def enable_2fa_cmd(
     if email:
         try:
             import atexit as _atexit_2fa_pre
-            from .db import get_engine, get_repos
+            from db import get_engine, get_repos
 
             cli_engine = get_engine(db_path)
             _atexit_2fa_pre.register(cli_engine.close)
@@ -294,8 +294,8 @@ def migrate_cmd(
 ) -> None:
     """Migrate JSON state files (outlook_state + sessions) sang SQLite database."""
     import atexit as _atexit_migrate
-    from .db import get_engine, get_repos
-    from .db.migrate import MigrationTool
+    from db import get_engine, get_repos
+    from db.migrate import MigrationTool
 
     engine = get_engine(db_path)
     _atexit_migrate.register(engine.close)
@@ -334,8 +334,8 @@ def import_pool_cmd(
         raise typer.Exit(1)
 
     import atexit as _atexit_pool
-    from .db import get_engine, get_repos
-    from .db.migrate import MigrationTool
+    from db import get_engine, get_repos
+    from db.migrate import MigrationTool
 
     engine = get_engine(db_path)
     _atexit_pool.register(engine.close)
@@ -396,7 +396,7 @@ def record_cmd(
     ),
 ) -> None:
     """Record full DOM actions + HAR cho 1 web flow manual."""
-    from .web_recorder import (
+    from web_recorder import (
         WebRecorderOptions,
         run_web_recording,
         validate_web_recorder_options,
@@ -479,11 +479,11 @@ def web_cmd(
     logging.getLogger("asyncio").setLevel(logging.CRITICAL)
 
     # Set loopback bind mode cho server trước khi start
-    from .web.server import set_loopback_bind
+    from web.server import set_loopback_bind
     set_loopback_bind(is_loopback)
 
     # Print token cho user (nhất là non-loopback cần nhập thủ công)
-    from .web.auth import get_token as _get_web_token
+    from web.auth import get_token as _get_web_token
     _token = _get_web_token()
 
     typer.echo(f"[web] starting at http://{host}:{port}/")
@@ -614,7 +614,7 @@ def signup_cmd(
         pool_path = Path(outlook_pool)
         if not pool_path.is_absolute():
             pool_path = settings.root_dir / pool_path
-        from .outlook_pool import (
+        from outlook_pool import (
             OutlookPoolError,
             parse_pool_file,
             pick_first_available,
@@ -633,7 +633,7 @@ def signup_cmd(
         _pool_combo_repo = None
         try:
             import atexit as _pool_atexit
-            from .db import get_engine, get_repos
+            from db import get_engine, get_repos
 
             _pool_engine = get_engine(db_path)
             _pool_atexit.register(_pool_engine.close)
@@ -722,7 +722,7 @@ def signup_cmd(
     _signup_engine = None  # type: ignore[assignment]
     if _pool_engine is not None and _pool_combo_repo is not None:
         try:
-            from .db import get_repos
+            from db import get_repos
             _signup_engine = _pool_engine
             _signup_combo_repo, _signup_job_repo, _signup_session_repo = get_repos(_pool_engine)
         except Exception:
@@ -731,7 +731,7 @@ def signup_cmd(
     if _signup_combo_repo is None:
         try:
             import atexit as _atexit
-            from .db import get_engine, get_repos
+            from db import get_engine, get_repos
 
             _signup_engine = get_engine(db_path)
             _atexit.register(_signup_engine.close)
@@ -754,7 +754,7 @@ def signup_cmd(
     # đã rotate trước đó (không overwrite bằng token cũ từ CLI arg).
     if _signup_combo_repo is not None and resolved_provider == "outlook" and outlook_combo:
         try:
-            from .mail_providers import OutlookCombo as _OC_pre
+            from mail_providers import OutlookCombo as _OC_pre
             _parsed_pre = _OC_pre.parse(outlook_combo)
             _signup_combo_repo.ensure_exists({
                 "email": _parsed_pre.email,
@@ -773,7 +773,7 @@ def signup_cmd(
     # Run signup. SQLite write trong provider (refresh-token rotation) có thể raise
     # DatabaseError lên đây — Req 9.5 yêu cầu warn + tiếp tục JSON output khi
     # not no_file_output, exit non-zero khi no_file_output.
-    from .db.engine import DatabaseError as _DBError
+    from db.engine import DatabaseError as _DBError
     sqlite_persist_ok = True
     try:
         result: SignupResult = asyncio.run(
@@ -846,7 +846,7 @@ def signup_cmd(
 
     # --- Fallback: JSON file pool state (khi SQLite persist thất bại) ---
     if not sqlite_persist_ok and resolved_provider == "outlook" and outlook_combo:
-        from .outlook_pool import mark_signup_failure, mark_signup_success
+        from outlook_pool import mark_signup_failure, mark_signup_success
         state_dir = settings.runtime_dir / "outlook_state"
         if result.success:
             mark_signup_success(state_dir=state_dir, email=email)

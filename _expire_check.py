@@ -147,7 +147,7 @@ def enforce_expiry() -> None:
     Build mode (chạy từ exe): module được generate vào exe → enforce strict.
     """
     try:
-        from . import _expire_const  # type: ignore[attr-defined]
+        import _expire_const  # type: ignore[attr-defined]
     except ImportError:
         try:
             import _expire_const  # type: ignore[import-not-found]

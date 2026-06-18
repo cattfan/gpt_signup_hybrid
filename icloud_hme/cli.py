@@ -50,9 +50,9 @@ from typing import Any
 
 import typer
 
-from ..config import Settings, load_settings
-from ..db import get_engine
-from ..db.repositories import (
+from config import Settings, load_settings
+from db import get_engine
+from db.repositories import (
     AuditLogRepository,
     IcloudPoolRepository,
 )

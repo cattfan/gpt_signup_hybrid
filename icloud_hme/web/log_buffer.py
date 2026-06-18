@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Any, AsyncIterator
 from .schemas import LogEvent
 
 if TYPE_CHECKING:  # pragma: no cover — type-only import, tránh cycle runtime.
-    from ..runner import LogCallback
+    from runner import LogCallback
 
     from web.sse_mux import SseMux
 

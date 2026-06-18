@@ -16,7 +16,7 @@ from .auth import get_token, require_token  # token-based auth
 from .manager import get_manager, get_session_manager, get_link_manager, get_upi_manager, set_sse_mux
 from .mail_modes import get_registry, serialize_for_api
 from .sse_mux import SseMux
-from ..payment_link import REGION_BILLING
+from payment_link import REGION_BILLING
 
 _log = logging.getLogger(__name__)
 
@@ -61,7 +61,7 @@ def set_loopback_bind(is_loopback: bool) -> None:
 async def on_startup():
     """Initialize SQLite engine + repos and pass job_repo to JobManager."""
     global _engine
-    from ..db import get_engine, get_repos
+    from db import get_engine, get_repos
 
     _engine = get_engine()
     combo_repo, job_repo, session_repo = get_repos(_engine)
@@ -70,7 +70,7 @@ async def on_startup():
     # Load settings từ DB 1 lần, truyền vào managers qua apply_settings().
     # Phải chạy trước recover_jobs() để job_timeout/proxy/headless đúng khi
     # worker bắt đầu process recovered jobs.
-    from ..db.repositories import RepositoryError
+    from db.repositories import RepositoryError
 
     settings_repo = _get_settings_repo()
     try:
@@ -498,7 +498,7 @@ async def set_config(payload: SetConfigRequest) -> JSONResponse:
         )
 
     # ── Write-through to Settings_Store (R6.1, R6.2, R6.7) ──
-    from ..db.repositories import RepositoryError
+    from db.repositories import RepositoryError
 
     settings_dict: dict[str, Any] = {}
     if payload.max_concurrent is not None:
@@ -678,7 +678,7 @@ async def get_proxy_pool_config() -> JSONResponse:
 @app.post("/api/proxy/pool")
 async def save_proxy_pool(payload: SaveProxyPoolRequest) -> JSONResponse:
     """Lưu pool vào Settings Store + reconfigure runtime ProxyPool (write-through)."""
-    from ..db.repositories import RepositoryError
+    from db.repositories import RepositoryError
     from .proxy_pool import get_proxy_pool, normalize_proxies
 
     mode = payload.rotation_mode if payload.rotation_mode in ("round_robin", "random", "probe") else "round_robin"
@@ -1099,7 +1099,7 @@ async def get_gopay_link(job_id: str) -> JSONResponse:
     Với job có access token, trả payment_link trial IDR 0 và gopay_link=None.
     Với job cũ không còn token, thử dùng payment_link đã lưu để lấy Midtrans legacy.
     """
-    from ..payment_link import (
+    from payment_link import (
         get_gopay_midtrans_url,
         get_gopay_url_from_access_token,
         GopayLinkError,
@@ -1155,7 +1155,7 @@ async def refresh_gopay_link(job_id: str) -> JSONResponse:
     Dùng khi link cũ expired. Cần job có _access_token (mode session_json/access_token)
     hoặc job đã success có thể retry.
     """
-    from ..payment_link import (
+    from payment_link import (
         get_gopay_url_from_access_token,
         GopayLinkError,
         PaymentLinkError,
@@ -1211,7 +1211,7 @@ def _get_settings_repo():
     """Trả về SettingsRepository instance, lazy-init từ _engine."""
     global _settings_repo  # noqa: PLW0603
     if _settings_repo is None:
-        from ..db import get_settings_repo
+        from db import get_settings_repo
         _settings_repo = get_settings_repo(_engine)
     return _settings_repo
 
@@ -1252,7 +1252,7 @@ async def get_setting(key: str) -> JSONResponse:
 @app.put("/api/settings/{key:path}")
 async def set_setting(key: str, payload: SetValueRequest) -> JSONResponse:
     """R5.3: Set a single setting. 422 on validation/whitelist error."""
-    from ..db.repositories import RepositoryError
+    from db.repositories import RepositoryError
     repo = _get_settings_repo()
     try:
         repo.set(key, payload.value)
@@ -1264,7 +1264,7 @@ async def set_setting(key: str, payload: SetValueRequest) -> JSONResponse:
 @app.delete("/api/settings/{key:path}")
 async def delete_setting(key: str) -> JSONResponse:
     """R5.4: Delete a single setting. 404 if not found, 422 on whitelist error."""
-    from ..db.repositories import RepositoryError
+    from db.repositories import RepositoryError
     repo = _get_settings_repo()
     try:
         deleted = repo.delete(key)
@@ -1278,7 +1278,7 @@ async def delete_setting(key: str) -> JSONResponse:
 @app.post("/api/settings/bulk")
 async def bulk_set_settings(payload: BulkSetRequest) -> JSONResponse:
     """R5.5: Atomic bulk set. 422 on validation/whitelist error."""
-    from ..db.repositories import RepositoryError
+    from db.repositories import RepositoryError
     repo = _get_settings_repo()
     try:
         repo.bulk_set(payload.items)
@@ -1308,7 +1308,7 @@ async def import_from_localstorage(payload: ImportFromLocalStorageRequest) -> JS
     - Handle corrupt runner_config.json → skip file, thêm runner_config_error — R7.7
     """
     import os as _os
-    from ..db.repositories import RepositoryError
+    from db.repositories import RepositoryError
     from .runner_config_store import RunnerConfig, RunnerConfigError
 
     repo = _get_settings_repo()
@@ -1338,7 +1338,7 @@ async def import_from_localstorage(payload: ImportFromLocalStorageRequest) -> JS
     runner_config_path: Path | None = None
     runner_config_bak: str | None = None
 
-    from ..config import load_settings as _load_app_settings
+    from config import load_settings as _load_app_settings
     try:
         app_settings = _load_app_settings()
         runner_config_path = app_settings.runtime_dir / "icloud" / "runner_config.json"
@@ -1596,7 +1596,7 @@ async def gopay_check_snap_token(payload: GopaySnapRequest) -> JSONResponse:
     Flow: access_token → checkout → Stripe → Midtrans URL → extract snap token.
     """
     import re as _re
-    from ..payment_link import (
+    from payment_link import (
         get_gopay_url_from_access_token,
         SessionExpiredError,
         CloudflareBlockedError,

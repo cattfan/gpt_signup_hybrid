@@ -359,7 +359,7 @@ def extract_config_from_paths(
 # ─────────────────────────────────────────────────────────────────────
 
 
-from .user_agent_profile import (
+from user_agent_profile import (
     SEC_CH_UA as _SEC_CH_UA,
     SEC_CH_UA_MOBILE as _SEC_CH_UA_MOBILE,
     SEC_CH_UA_PLATFORM as _SEC_CH_UA_PLATFORM,

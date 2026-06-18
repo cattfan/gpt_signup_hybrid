@@ -32,7 +32,7 @@ from pathlib import Path
 from time import monotonic
 from typing import Any, Callable
 
-from ..user_agent_profile import (
+from user_agent_profile import (
     CURL_IMPERSONATE_PRIMARY as _IMPERSONATE,
     CURL_IMPERSONATE_CANDIDATES as _IMPERSONATE_CHAIN,
 )
@@ -648,8 +648,8 @@ async def _create_chatgpt_checkout(
     log: LogFn,
     proxies: dict[str, str] | None,
 ) -> dict[str, Any]:
-    from ..pay_upi_http import _CHATGPT_CHECKOUT_URL, _USER_AGENT, PayUpiError
-    from ..user_agent_profile import (
+    from pay_upi_http import _CHATGPT_CHECKOUT_URL, _USER_AGENT, PayUpiError
+    from user_agent_profile import (
         SEC_CH_UA as _SEC_CH_UA,
         SEC_CH_UA_MOBILE as _SEC_CH_UA_MOBILE,
         SEC_CH_UA_PLATFORM as _SEC_CH_UA_PLATFORM,
@@ -704,10 +704,10 @@ async def _stripe_elements_session(
     log: LogFn,
     proxies: dict[str, str] | None,
 ) -> dict[str, Any]:
-    from ..pay_upi_http import (
+    from pay_upi_http import (
         _STRIPE_ELEMENTS_URL, _STRIPE_VERSION, _USER_AGENT, PayUpiError,
     )
-    from ..user_agent_profile import (
+    from user_agent_profile import (
         SEC_CH_UA as _SEC_CH_UA,
         SEC_CH_UA_MOBILE as _SEC_CH_UA_MOBILE,
         SEC_CH_UA_PLATFORM as _SEC_CH_UA_PLATFORM,
@@ -770,11 +770,11 @@ async def _stripe_confirm_upi_qr(
     token_config: Any | None,
     proxies: dict[str, str] | None,
 ) -> dict[str, Any]:
-    from ..pay_upi_http import (
+    from pay_upi_http import (
         _STRIPE_CONFIRM_URL, _STRIPE_VERSION, _USER_AGENT,
         _stripe_guid, _to_form,
     )
-    from ..user_agent_profile import (
+    from user_agent_profile import (
         SEC_CH_UA as _SEC_CH_UA,
         SEC_CH_UA_MOBILE as _SEC_CH_UA_MOBILE,
         SEC_CH_UA_PLATFORM as _SEC_CH_UA_PLATFORM,
@@ -787,7 +787,7 @@ async def _stripe_confirm_upi_qr(
     init_checksum = init_data["init_checksum"]
 
     if token_config is not None:
-        from .. import stripe_token as _st
+        import stripe_token as _st
 
         tokens = _st.build_token_fields(ppage_id=ppage_id, config=token_config)
         js_checksum = tokens["js_checksum"]
@@ -907,10 +907,10 @@ async def _stripe_payment_page_refresh(
     log: LogFn,
     proxies: dict[str, str] | None,
 ) -> dict[str, Any]:
-    from ..pay_upi_http import (
+    from pay_upi_http import (
         _STRIPE_PAGE_URL, _STRIPE_VERSION, _USER_AGENT, _to_form,
     )
-    from ..user_agent_profile import (
+    from user_agent_profile import (
         SEC_CH_UA as _SEC_CH_UA,
         SEC_CH_UA_MOBILE as _SEC_CH_UA_MOBILE,
         SEC_CH_UA_PLATFORM as _SEC_CH_UA_PLATFORM,
@@ -1072,8 +1072,8 @@ async def _chatgpt_approve_checkout(
     log: LogFn,
     proxies: dict[str, str] | None,
 ) -> dict[str, Any]:
-    from ..pay_upi_http import _CHATGPT_APPROVE_URL, _USER_AGENT
-    from ..user_agent_profile import (
+    from pay_upi_http import _CHATGPT_APPROVE_URL, _USER_AGENT
+    from user_agent_profile import (
         SEC_CH_UA as _SEC_CH_UA,
         SEC_CH_UA_MOBILE as _SEC_CH_UA_MOBILE,
         SEC_CH_UA_PLATFORM as _SEC_CH_UA_PLATFORM,
@@ -1278,10 +1278,10 @@ async def run_upi_qr_probe(
 
     # Lazy import → chỉ khi job thật sự chạy.
     from curl_cffi.requests import AsyncSession  # noqa: F401 — kept for type hints
-    from .. import stripe_token as _st
-    from ..pay_upi_http import _stripe_init
-    from ..random_profile import random_india_profile
-    from ..session_phase import SessionError, get_session_pure_request
+    import stripe_token as _st
+    from pay_upi_http import _stripe_init
+    from random_profile import random_india_profile
+    from session_phase import SessionError, get_session_pure_request
 
     # ─────────────────────────────────────────────────────────────────
     # Step 1 — login với retry. SessionError dạng "WARNING_BANNER" /

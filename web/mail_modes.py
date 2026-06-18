@@ -11,8 +11,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from ..mail_providers import OutlookCombo, OutlookComboError, GmailAdvancedProvider, GmailAdvancedParseError
-from ..models import SignupRequest
+from mail_providers import OutlookCombo, OutlookComboError, GmailAdvancedProvider, GmailAdvancedParseError
+from models import SignupRequest
 
 
 # ─── Errors ───────────────────────────────────────────────────────────
@@ -64,7 +64,7 @@ def _build_outlook_request(
     proxy: str | None = None,
     reg_mode: str = "browser",
 ) -> SignupRequest:
-    from ..config import env_insecure_tls
+    from config import env_insecure_tls
     return SignupRequest(
         email=parsed.email,
         mail_provider="outlook",
@@ -115,7 +115,7 @@ def _build_worker_request(
     cfg = worker_config or {}
     # insecure_tls chỉ bật qua opt-in: env GPT_SIGNUP_INSECURE_TLS=1 hoặc
     # worker_config["insecure_tls"]. Default = secure.
-    from ..config import env_insecure_tls
+    from config import env_insecure_tls
     raw_flag = str(cfg.get("insecure_tls", "")).strip().lower()
     cfg_insecure = raw_flag in ("1", "true", "yes", "on")
     insecure = env_insecure_tls() or cfg_insecure
@@ -199,7 +199,7 @@ def _build_gmail_advanced_request(
 
     # Nếu email rỗng → dùng placeholder, pre_check sẽ resolve
     signup_email = email if email else "pending@gmail-advanced.local"
-    from ..config import env_insecure_tls
+    from config import env_insecure_tls
     return SignupRequest(
         email=signup_email,
         mail_provider="gmail_advanced",
@@ -252,7 +252,7 @@ def _build_dongvanfb_request(
     proxy: str | None = None,
     reg_mode: str = "browser",
 ) -> SignupRequest:
-    from ..config import env_insecure_tls
+    from config import env_insecure_tls
     return SignupRequest(
         email=parsed.email,
         mail_provider="dongvanfb",

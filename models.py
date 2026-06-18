@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Any
 from pydantic import BaseModel, Field
 
-from .user_agent_profile import (
+from user_agent_profile import (
     CURL_IMPERSONATE_PRIMARY as _CURL_IMPERSONATE_PRIMARY,
     WINDOWS_USER_AGENT as _WINDOWS_USER_AGENT,
 )

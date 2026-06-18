@@ -41,9 +41,9 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from .random_profile import random_india_profile
-from .session_phase import get_session_pure_request
-from .user_agent_profile import (
+from random_profile import random_india_profile
+from session_phase import get_session_pure_request
+from user_agent_profile import (
     CURL_IMPERSONATE_PRIMARY as _UA_IMPERSONATE_PRIMARY,
     SEC_CH_UA as _SEC_CH_UA,
     SEC_CH_UA_MOBILE as _SEC_CH_UA_MOBILE,
@@ -526,7 +526,7 @@ async def _stripe_confirm_upi(
 
     # Compute js_checksum + rv_timestamp từ token_config (extract live).
     if token_config is not None:
-        from . import stripe_token as _st
+        import stripe_token as _st
         tokens = _st.build_token_fields(ppage_id=ppage_id, config=token_config)
         js_checksum = tokens["js_checksum"]
         rv_timestamp = tokens["rv_timestamp"]
@@ -840,7 +840,7 @@ async def run_pay_upi(
     )
 
     from curl_cffi.requests import AsyncSession
-    from . import stripe_token as _st
+    import stripe_token as _st
 
     # AsyncSession KHÔNG dùng proxies session-level — mỗi request truyền proxies
     # riêng qua `policy.dict_for(step)` để chuyển đổi điểm áp proxy bằng flag CLI.

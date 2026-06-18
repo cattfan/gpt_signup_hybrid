@@ -30,11 +30,11 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from .config import Settings, ensure_runtime_dirs, prepare_profile_dir
-from .mail_providers import MailProvider, OutlookComboError
-from .models import BrowserHandoff, SignupRequest
-from ._nextauth_bootstrap import bootstrap_authorize_url
-from ._browser_retry import (
+from config import Settings, ensure_runtime_dirs, prepare_profile_dir
+from mail_providers import MailProvider, OutlookComboError
+from models import BrowserHandoff, SignupRequest
+from _nextauth_bootstrap import bootstrap_authorize_url
+from _browser_retry import (
     DRIVER_DEAD_MARKERS as _DRIVER_DEAD_MARKERS,
     LAUNCH_RETRY_BACKOFF as _LAUNCH_RETRY_BACKOFF,
     LAUNCH_RETRY_MAX as _LAUNCH_RETRY_MAX,
@@ -43,7 +43,7 @@ from ._browser_retry import (
     is_network_error as _is_network_error,
     parse_proxy_for_playwright as _parse_proxy,
 )
-from .user_agent_profile import CAMOUFOX_OS as _CAMOUFOX_OS
+from user_agent_profile import CAMOUFOX_OS as _CAMOUFOX_OS
 
 
 class BrowserPhaseError(Exception):
@@ -1666,7 +1666,7 @@ async def run_browser_phase(
     Returns: (handoff, otp_seconds).
     """
     if request.tls_insecure:
-        from .config import warn_insecure_tls
+        from config import warn_insecure_tls
         warn_insecure_tls("browser_phase")
         log("[security] TLS verification DISABLED — debug mode")
 

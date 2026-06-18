@@ -13,18 +13,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
-from ..config import load_settings, proxy_env_defaults, runtime_session_dir
-from ..mail_providers import OutlookCombo, OutlookComboError
-from ..mfa_phase import MfaError, enable_2fa
-from ..models import SignupRequest, SignupResult
-from ..signup import run_signup
-from .._browser_retry import NETWORK_ERROR_MARKERS
+from config import load_settings, proxy_env_defaults, runtime_session_dir
+from mail_providers import OutlookCombo, OutlookComboError
+from mfa_phase import MfaError, enable_2fa
+from models import SignupRequest, SignupResult
+from signup import run_signup
+from _browser_retry import NETWORK_ERROR_MARKERS
 from .mail_modes import MailModeParseError, get_spec
 from .proxy_health import _acquire_kwargs, _load_proxy_knobs, acquire_live_proxy
 from .proxy_pool import get_proxy_pool
 
 if TYPE_CHECKING:
-    from ..db.repositories import ComboRepository, JobRepository, SessionResultRepository
+    from db.repositories import ComboRepository, JobRepository, SessionResultRepository
     from .sse_mux import SseMux
 
 _log = logging.getLogger(__name__)
@@ -217,7 +217,7 @@ def _current_proxy_knobs() -> dict:
     Store không sẵn → fallback cache (apply_settings) → default + .env.
     """
     try:
-        from ..db import get_engine, get_settings_repo
+        from db import get_engine, get_settings_repo
         store = get_settings_repo(get_engine()).list()
         return _load_proxy_knobs(store, env_defaults=proxy_env_defaults())
     except Exception:  # noqa: BLE001 — DB chưa mở / lỗi → fallback
@@ -689,7 +689,7 @@ class JobManager:
         return self._post_reg_link_region
 
     def set_post_reg_link_region(self, value: str) -> None:
-        from ..payment_link import REGION_BILLING
+        from payment_link import REGION_BILLING
         v = (value or "").strip().upper()
         if v not in REGION_BILLING:
             raise ValueError(f"invalid region: {value}. Must be one of: {list(REGION_BILLING.keys())}")
@@ -1199,7 +1199,7 @@ class JobManager:
             return False
 
         # Resolve region
-        from ..payment_link import REGION_BILLING
+        from payment_link import REGION_BILLING
         if region:
             region_resolved = region.strip().upper()
             if region_resolved not in REGION_BILLING:
@@ -1224,7 +1224,7 @@ class JobManager:
             return False
 
         self._job_log(job, f"[rerun-link] region={region_resolved}, fetching...")
-        from ..payment_link import get_checkout_url, SessionExpiredError, PaymentLinkError, CloudflareBlockedError
+        from payment_link import get_checkout_url, SessionExpiredError, PaymentLinkError, CloudflareBlockedError
 
         url: str | None = None
         last_err: Exception | None = None
@@ -1967,7 +1967,7 @@ class JobManager:
         """Post-reg: GET /api/auth/session bằng cookies đã có (HTTP only, không re-login)."""
         try:
             self._job_log(job, "[post-reg] fetching session...")
-            from ..session_phase import fetch_session_via_http
+            from session_phase import fetch_session_via_http
             data = None
             for ses_attempt in range(1, 4):
                 try:
@@ -1996,7 +1996,7 @@ class JobManager:
             self._job_log(job, "[post-reg] fetching payment link...")
             if not access_token:
                 raise RuntimeError("access_token rỗng từ SignupResult")
-            from ..payment_link import get_checkout_url, SessionExpiredError, CloudflareBlockedError
+            from payment_link import get_checkout_url, SessionExpiredError, CloudflareBlockedError
             region = job.region or self._post_reg_link_region
             self._job_log(job, f"[post-reg] region={region}")
             url = None
@@ -2150,7 +2150,7 @@ def get_manager(
 # SessionJobManager — Get Session feature
 # ─────────────────────────────────────────────────────────────────────
 
-from ..session_phase import SessionError, get_session  # noqa: E402
+from session_phase import SessionError, get_session  # noqa: E402
 
 
 @dataclass
@@ -2712,7 +2712,7 @@ class SessionJobManager:
             job_proxy = await self._begin_job_proxy(job, log)
 
             # Get Session fix cứng dùng pure_request (HTTP-only, không browser).
-            from ..session_phase import get_session_pure_request
+            from session_phase import get_session_pure_request
             session_data = await asyncio.wait_for(
                 get_session_pure_request(
                     email=job.email,
@@ -2840,7 +2840,7 @@ def get_session_manager(job_repo: "JobRepository | None" = None) -> SessionJobMa
 # LinkJobManager — Get Link feature
 # ─────────────────────────────────────────────────────────────────────
 
-from ..payment_link import get_checkout_url, PaymentLinkError  # noqa: E402
+from payment_link import get_checkout_url, PaymentLinkError  # noqa: E402
 
 
 LinkMode = Literal["combo", "session_json", "access_token"]
@@ -2991,7 +2991,7 @@ class LinkJobManager:
         return self._region
 
     def set_region(self, value: str) -> None:
-        from ..payment_link import REGION_BILLING
+        from payment_link import REGION_BILLING
         if value not in REGION_BILLING:
             raise ValueError(f"invalid region: {value}. Must be one of: {list(REGION_BILLING.keys())}")
         self._region = value
@@ -3260,7 +3260,7 @@ class LinkJobManager:
         đang chạy hoặc job đã add trước đó với region khác.
         """
         # Snapshot region cho batch này. Nếu caller không truyền, dùng default state.
-        from ..payment_link import REGION_BILLING
+        from payment_link import REGION_BILLING
         if region is not None:
             region_resolved = region.strip().upper()
             if region_resolved not in REGION_BILLING:
@@ -3544,7 +3544,7 @@ class LinkJobManager:
             return False
         # Resolve region (nếu user override)
         if region is not None:
-            from ..payment_link import REGION_BILLING
+            from payment_link import REGION_BILLING
             r = (region or "").strip().upper()
             if r not in REGION_BILLING:
                 raise ValueError(f"invalid region: {region}")
@@ -3675,13 +3675,13 @@ class LinkJobManager:
             if job.mode == "combo":
                 # Login via browser or pure_request → obtain token
                 log("[login] starting")
-                from ..config import env_insecure_tls
+                from config import env_insecure_tls
                 keep_browser_open = self._debug and not self._headless
                 # Debug + headed → bỏ timeout để user soi browser tới khi cancel
                 timeout = None if keep_browser_open else self._job_timeout
                 try:
                     if job.reg_mode == "pure_request":
-                        from ..session_phase import get_session_pure_request
+                        from session_phase import get_session_pure_request
                         session_data = await asyncio.wait_for(
                             get_session_pure_request(
                                 email=job.email,
@@ -3775,7 +3775,7 @@ class LinkJobManager:
                 except PaymentLinkError as exc:
                     last_link_exc = exc
                     # 401 = token expired — retry vô nghĩa
-                    from ..payment_link import SessionExpiredError, CloudflareBlockedError
+                    from payment_link import SessionExpiredError, CloudflareBlockedError
                     if isinstance(exc, SessionExpiredError):
                         log(f"[link] session expired — no retry: {exc}")
                         break
@@ -4397,7 +4397,7 @@ class UpiJobManager:
             self._broadcast_job(job)
             return result
 
-        from ..session_phase import (
+        from session_phase import (
             fetch_session_via_http,
             fetch_account_entitlement,
             SessionError,

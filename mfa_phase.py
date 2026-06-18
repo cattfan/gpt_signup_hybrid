@@ -39,7 +39,7 @@ from typing import Any, Awaitable, Callable
 
 from curl_cffi.requests import AsyncSession
 
-from .totp_helper import generate_code, normalize_secret
+from totp_helper import generate_code, normalize_secret
 
 
 _BASE = "https://chatgpt.com/backend-api"
@@ -49,6 +49,10 @@ _BASE = "https://chatgpt.com/backend-api"
 _HTTP_TIMEOUT = 60.0
 _MAX_ATTEMPTS = 4
 _BACKOFF_SECONDS = (3.0, 6.0, 10.0)  # delay sau attempt 1, 2, 3
+
+# Outer retry backoff khi gặp CF challenge / 403. CF rate-limit thường giữ
+# 30s–5min, backoff ngắn (3s) sẽ cháy hết retry budget mà vẫn bị block.
+_BACKOFF_CF_SECONDS = (15.0, 30.0, 60.0)
 
 # mfa_info: optional verify — KHÔNG ảnh hưởng tới quyết định activated=True.
 _MFA_INFO_TIMEOUT = 10.0
@@ -71,6 +75,23 @@ _ENROLL_CONFLICT_MARKERS = (
     "duplicate",
 )
 
+# Markers cho Cloudflare challenge / WAF block — thường HTTP 403/503 + body HTML
+# có chứa các pattern này. Khi match → refresh CF cookies + retry với backoff dài.
+_CF_CHALLENGE_MARKERS = (
+    "<html",
+    "cloudflare",
+    "cf-mitigated",
+    "cf-ray",
+    "challenge-platform",
+    "just a moment",
+    "attention required",
+    "enable javascript and cookies",
+)
+
+# Cookies bắt buộc inject vào curl_cffi session để bypass CF khi gọi /backend-api.
+# Khớp đúng tên CF cookies + session cookies chatgpt.com (xem browser_phase.py).
+_BACKEND_DOMAINS = ("chatgpt.com", "openai.com")
+
 
 # Kiểu callback persist khi đã enroll xong (chưa activate)
 EnrollPersistCallback = Callable[[dict[str, Any]], Awaitable[None]]
@@ -89,18 +110,81 @@ class MfaError(Exception):
         self.partial_state = partial_state
 
 
-async def _refresh_access_token(
-    session: AsyncSession, *, cookies: list[dict[str, Any]], log,
-) -> str | None:
-    """Gọi /api/auth/session với session cookies để lấy access_token mới."""
+def _inject_session_cookies(
+    session: AsyncSession,
+    cookies: list[dict[str, Any]] | None,
+    *,
+    log,
+) -> int:
+    """Inject session cookies cho chatgpt.com + openai.com vào curl_cffi session.
+
+    Cookies này gồm CF cookies (``cf_clearance``, ``__cf_bm``) đã pass CF
+    challenge từ browser context. Không inject → POST /mfa/enroll lần đầu sẽ
+    bị CF block 403 vì curl_cffi session không có CF cookies.
+
+    Returns:
+        Số cookie đã inject thành công.
+    """
+    if not cookies:
+        return 0
+    count = 0
+    cf_count = 0
     for c in cookies:
-        domain = (c.get("domain") or "").lower()
-        if "chatgpt.com" in domain:
+        try:
+            domain_raw = c.get("domain") or ""
+            domain = domain_raw.lstrip(".").lower()
+            if not domain:
+                continue
+            if not any(d in domain for d in _BACKEND_DOMAINS):
+                continue
             session.cookies.set(
                 c["name"], c["value"],
-                domain=c.get("domain") or "chatgpt.com",
+                domain=domain_raw or domain,
                 path=c.get("path") or "/",
             )
+            count += 1
+            if c["name"] in ("cf_clearance", "__cf_bm"):
+                cf_count += 1
+        except Exception as exc:
+            log(f"[mfa] inject cookie {c.get('name')!r} failed: {exc}")
+    log(f"[mfa] injected {count} cookies (cf_clearance/__cf_bm: {cf_count})")
+    return count
+
+
+def _is_cf_challenge(status_code: int, body_text: str, headers) -> bool:
+    """Detect Cloudflare challenge / WAF block.
+
+    HTTP 403/503 với body HTML chứa CF markers → CF block. Cần refresh CF
+    cookies (qua /api/auth/session) trước khi retry, không retry naive.
+    """
+    if status_code not in (403, 429, 503):
+        return False
+    body_lower = (body_text or "").lower()
+    if any(m in body_lower for m in _CF_CHALLENGE_MARKERS):
+        return True
+    # Header CF-Mitigated được set khi CF action = challenge/block
+    try:
+        cf_mitigated = (headers.get("cf-mitigated") or "").lower() if headers else ""
+        if cf_mitigated:
+            return True
+    except Exception:
+        pass
+    return False
+
+
+async def _refresh_access_token(
+    session: AsyncSession, *, cookies: list[dict[str, Any]] | None, log,
+) -> str | None:
+    """Gọi /api/auth/session với session cookies để lấy access_token mới.
+
+    Side effect: response Set-Cookie từ chatgpt.com (gồm ``__cf_bm`` mới) sẽ
+    được curl_cffi tự động lưu vào session jar — refresh CF cookies song hành
+    với việc lấy access_token mới.
+    """
+    # Re-inject cookies trong trường hợp jar bị clear hoặc caller pass cookies
+    # mới — idempotent, không hại nếu đã inject từ trước.
+    if cookies:
+        _inject_session_cookies(session, cookies, log=log)
     url = "https://chatgpt.com/api/auth/session"
     try:
         r = await session.get(url, timeout=30)
@@ -110,7 +194,7 @@ async def _refresh_access_token(
         data = r.json()
         token = data.get("accessToken")
         if token:
-            log("[mfa] access_token refreshed OK")
+            log("[mfa] access_token + CF cookies refreshed OK")
         else:
             log("[mfa] refresh response missing accessToken")
         return token
@@ -151,7 +235,11 @@ async def _enroll_totp(
 ) -> tuple[dict[str, Any], str]:
     """POST /mfa/enroll → trả (enroll_data, access_token_used).
 
-    Nếu 401 token_revoked + có cookies → refresh access_token rồi retry.
+    Xử lý các response error:
+      - 401 token_revoked + có cookies → refresh access_token rồi retry.
+      - 403/429/503 + body HTML (CF challenge) → refresh CF cookies + token
+        qua /api/auth/session rồi retry. Sau retry vẫn fail → raise để outer
+        retry áp dụng backoff CF dài (15/30/60s).
     """
     url = f"{_BASE}/accounts/mfa/enroll"
     headers = {
@@ -163,6 +251,7 @@ async def _enroll_totp(
         session, url=url, headers=headers, body={"factor_type": "totp"},
         log=log, label="enroll",
     )
+
     # 401 token_revoked → refresh access_token rồi retry 1 lần
     if r.status_code == 401 and cookies:
         body_text = r.text[:500]
@@ -180,8 +269,40 @@ async def _enroll_totp(
             else:
                 raise MfaError(f"enroll failed HTTP 401 + refresh failed: {body_text}")
 
+    # 403/429/503 + CF challenge → refresh CF cookies + token rồi retry 1 lần.
+    # Đây là root cause hay gặp: account vừa create, /backend-api lần đầu bị
+    # CF intercept vì JWT chưa propagate. Refresh /api/auth/session để CF set
+    # __cf_bm mới và lấy access_token đã propagate.
+    body_text_initial = r.text[:1500] if hasattr(r, "text") else ""
+    if _is_cf_challenge(r.status_code, body_text_initial, getattr(r, "headers", None)):
+        log(
+            f"[mfa] CF challenge HTTP {r.status_code} (body_len={len(body_text_initial)}) "
+            f"— refreshing token + CF cookies"
+        )
+        if cookies:
+            new_token = await _refresh_access_token(session, cookies=cookies, log=log)
+            if new_token:
+                access_token = new_token
+                headers["Authorization"] = f"Bearer {access_token}"
+                await asyncio.sleep(3.0)  # cho CF propagate cookie mới
+                r = await _post_with_retry(
+                    session, url=url, headers=headers, body={"factor_type": "totp"},
+                    log=log, label="enroll-cf-retry",
+                )
+            else:
+                raise MfaError(
+                    f"enroll CF challenge HTTP {r.status_code} + refresh token failed "
+                    f"(body: {body_text_initial[:200]})"
+                )
+        else:
+            raise MfaError(
+                f"enroll CF challenge HTTP {r.status_code} but no cookies passed "
+                f"để refresh — caller phải truyền cookies (body: {body_text_initial[:200]})"
+            )
+
     if r.status_code != 200:
-        raise MfaError(f"enroll failed HTTP {r.status_code}: {r.text[:300]}")
+        body_text = r.text[:300] if hasattr(r, "text") else ""
+        raise MfaError(f"enroll failed HTTP {r.status_code}: {body_text}")
     data = r.json()
     if "secret" not in data:
         raise MfaError(f"enroll response missing secret: {data}")
@@ -199,11 +320,14 @@ async def _enroll_totp_with_retry(
 ) -> tuple[dict[str, Any], str]:
     """Wrap ``_enroll_totp`` với outer retry — toàn bộ enroll fail → retry lại.
 
-    Phân biệt 2 loại lỗi:
+    Phân biệt 3 loại lỗi:
       - **Conflict** (server đã có active factor) → KHÔNG retry, propagate ngay
         để caller dùng pending_enrollment / Get Session flow.
-      - **Lỗi khác** (HTTP 4xx ngoài conflict, 5xx, network, timeout) → retry tới
-        ``max_attempts`` lần với backoff giữa các lần.
+      - **CF challenge** (HTTP 403/429/503 + body HTML) → retry với backoff dài
+        (15/30/60s) vì CF rate-limit thường giữ ≥30s. Backoff ngắn (3s) sẽ
+        cháy retry budget mà vẫn bị block.
+      - **Lỗi khác** (HTTP 4xx ngoài conflict, 5xx, network, timeout) → retry
+        backoff thường (3/6/10s).
 
     Khác với ``_post_with_retry`` (chỉ retry 5xx + transient ở mức HTTP), wrapper
     này retry ở mức **logical operation** — bao gồm cả refresh-token, response
@@ -225,10 +349,19 @@ async def _enroll_totp_with_retry(
             last_exc = exc
             log(f"[mfa] enroll attempt {attempt}/{max_attempts} failed: {exc}")
             if attempt < max_attempts:
-                backoff = _BACKOFF_SECONDS[
-                    min(attempt - 1, len(_BACKOFF_SECONDS) - 1)
+                # CF challenge (403/429/503 với body HTML) → backoff dài hơn.
+                # Detect qua message: chứa "HTTP 403/429/503" + CF marker.
+                is_cf = (
+                    ("http 403" in msg or "http 429" in msg or "http 503" in msg
+                     or "cf challenge" in msg)
+                    and any(m in msg for m in _CF_CHALLENGE_MARKERS)
+                )
+                backoff_table = _BACKOFF_CF_SECONDS if is_cf else _BACKOFF_SECONDS
+                backoff = backoff_table[
+                    min(attempt - 1, len(backoff_table) - 1)
                 ]
-                log(f"[mfa] enroll retry trong {backoff:.0f}s...")
+                tag = "CF cooldown" if is_cf else "retry"
+                log(f"[mfa] enroll {tag} trong {backoff:.0f}s...")
                 await asyncio.sleep(backoff)
 
     # Hết số lần retry — propagate lỗi cuối cùng
@@ -376,7 +509,7 @@ async def enable_2fa(
         MfaError: Nếu enroll/activate fail. ``partial_state`` (nếu có) chứa
             secret/factor_id/session_id để caller persist + retry sau.
     """
-    from .user_agent_profile import (
+    from user_agent_profile import (
         CURL_IMPERSONATE_PRIMARY,
         SEC_CH_UA,
         SEC_CH_UA_MOBILE,
@@ -399,8 +532,21 @@ async def enable_2fa(
         "sec-ch-ua": SEC_CH_UA,
         "sec-ch-ua-mobile": SEC_CH_UA_MOBILE,
         "sec-ch-ua-platform": SEC_CH_UA_PLATFORM,
+        # Sec-Fetch hints — browser thật luôn gửi 3 header này khi POST
+        # /backend-api từ origin chatgpt.com. Thiếu → CF/WAF coi là bot.
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-origin",
     }
     async with AsyncSession(impersonate=impersonate, proxies=proxies, headers=base_headers) as session:
+        # ── BẮT BUỘC: inject CF cookies + session cookies vào curl_cffi session
+        # NGAY khi tạo, trước khi POST /mfa/enroll. Lý do: browser context đã
+        # pass CF challenge và có ``cf_clearance`` + ``__cf_bm``. Nếu curl_cffi
+        # session khởi tạo trắng thì lần POST đầu tiên sẽ bị CF block 403 với
+        # body HTML. Đây là root cause của "enroll failed HTTP 403: <html...".
+        if cookies:
+            _inject_session_cookies(session, cookies, log=log)
+
         # ── Phase 1: secure secret ──
         # Ưu tiên pending_enrollment từ caller (DB) → bỏ qua enroll.
         # Nếu enroll lần này conflict (server đã có active factor) → đẩy lỗi

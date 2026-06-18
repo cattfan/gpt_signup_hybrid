@@ -21,7 +21,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 
-from .user_agent_profile import (
+from user_agent_profile import (
     SEC_CH_UA as _SEC_CH_UA,
     WINDOWS_USER_AGENT as _WINDOWS_USER_AGENT,
 )

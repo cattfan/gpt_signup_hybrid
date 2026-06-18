@@ -21,7 +21,7 @@ from urllib.parse import urlparse, urlunparse
 
 from curl_cffi.requests import AsyncSession
 
-from .user_agent_profile import (
+from user_agent_profile import (
     CURL_IMPERSONATE_PRIMARY as _UA_IMPERSONATE_PRIMARY,
     SEC_CH_UA as _SEC_CH_UA,
     SEC_CH_UA_MOBILE as _SEC_CH_UA_MOBILE,

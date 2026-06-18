@@ -9,13 +9,13 @@ from typing import TYPE_CHECKING
 # (`gpt_signup_hybrid.icloud_hme.repository`); absolute fallback khi import flat
 # (sys.path chỉ có repo root, package `gpt_signup_hybrid` không nằm trên sys.path).
 try:
-    from ..db.engine import DatabaseError
+    from db.engine import DatabaseError
 except ImportError:  # pragma: no cover — flat import path
     from db.engine import DatabaseError  # type: ignore[no-redef]
 
 if TYPE_CHECKING:
     try:
-        from ..db.engine import DatabaseEngine
+        from db.engine import DatabaseEngine
     except ImportError:
         from db.engine import DatabaseEngine  # type: ignore[no-redef]
 
