@@ -4650,6 +4650,24 @@ class UpiJobManager:
             # + giữ len>1 cho _proxy_advance_enabled. Hot-load: user vừa cập
             # nhật là dùng ngay.
             raw_pool = list(get_proxy_pool().live_entries())
+            # Debug log: nếu pool rỗng, log lý do — giúp user phân biệt giữa
+            # "chưa cấu hình proxy" vs "proxy bị mark_dead". Mask cả raw line
+            # để không leak credentials.
+            _pool_status = get_proxy_pool().status()
+            self._job_log(
+                job,
+                f"[proxy] pool status: total={_pool_status.get('total')} "
+                f"live={_pool_status.get('live')} dead={len(_pool_status.get('dead', []))} "
+                f"mode={_pool_status.get('mode')!r}",
+            )
+            if not raw_pool:
+                self._job_log(
+                    job,
+                    "[proxy] WARNING — live entries rỗng → flow sẽ chạy DIRECT toàn bộ. "
+                    "Check Settings tab > Proxy Pool: (1) đã Save proxy chưa? "
+                    "(2) format đúng host:port[:user[:pass]] chưa? "
+                    "(3) proxy có bị mark_dead trong run trước không (Reset Dead)?",
+                )
             # _active_proxy = first proxy materialized (= IP token-export
             # replay cho entitlement-check). first_proxy lấy ở runner —
             # ở đây chỉ cần record raw line đầu cho mark_dead.
