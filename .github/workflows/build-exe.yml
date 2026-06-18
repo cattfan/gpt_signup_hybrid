@@ -34,15 +34,28 @@ jobs:
 
       - name: Install Python deps
         run: |
+          $ErrorActionPreference = 'Stop'
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed" }
+          pip install -r requirements-build.txt
+          if ($LASTEXITCODE -ne 0) { throw "pip install requirements-build.txt failed" }
           pip install pyinstaller==6.10.0
+          if ($LASTEXITCODE -ne 0) { throw "pip install pyinstaller failed" }
+        shell: pwsh
+
+      - name: Verify deps installed
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -c "import playwright; import fastapi; import uvicorn; import curl_cffi; import PyInstaller; print('all OK')"
+          if ($LASTEXITCODE -ne 0) { throw "deps verify failed" }
         shell: pwsh
 
       - name: Install Playwright Chromium
         if: ${{ inputs.bundle_chromium }}
         run: |
+          $ErrorActionPreference = 'Stop'
           python -m playwright install chromium
+          if ($LASTEXITCODE -ne 0) { throw "playwright install chromium failed" }
         shell: pwsh
 
       - name: Build EXE
