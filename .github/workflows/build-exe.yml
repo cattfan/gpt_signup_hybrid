@@ -99,17 +99,20 @@ jobs:
 
       - name: Build EXE
         run: |
+          $ErrorActionPreference = 'Stop'
           $extra = @()
           if (-not [System.Convert]::ToBoolean('${{ inputs.bundle_chromium }}')) {
             $extra += '--no-bundle-chromium'
           }
           python scripts/build_exe.py --hours ${{ inputs.hours_valid }} @extra
+          if ($LASTEXITCODE -ne 0) { throw "build_exe.py failed (exit $LASTEXITCODE)" }
         shell: pwsh
 
       - name: Verify EXE
         run: |
+          $ErrorActionPreference = 'Stop'
           if (-not (Test-Path "dist/GSH.exe")) {
-            Write-Error "GSH.exe not found"; exit 1
+            throw "dist/GSH.exe not found after build_exe.py"
           }
           $size = (Get-Item "dist/GSH.exe").Length / 1MB
           Write-Host ("EXE size: {0:F1} MB" -f $size)
@@ -117,14 +120,28 @@ jobs:
 
       - name: Install Inno Setup
         run: |
+          $ErrorActionPreference = 'Stop'
           choco install innosetup --no-progress -y
+          if ($LASTEXITCODE -ne 0) { throw "choco install innosetup failed (exit $LASTEXITCODE)" }
+          # Verify ISCC.exe có thật
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            throw "ISCC.exe not found at $iscc after install"
+          }
+          Write-Host "Inno Setup installed at: $iscc"
         shell: pwsh
 
       - name: Build Installer
         run: |
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" scripts\installer.iss
+          $ErrorActionPreference = 'Stop'
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          # /Q quiet — chỉ in error, KHÔNG flood log với progress.
+          # /O+ chỉ định output dir tường minh (dù installer.iss đã có
+          # OutputDir=..\dist).
+          & $iscc /Q "scripts\installer.iss"
+          if ($LASTEXITCODE -ne 0) { throw "ISCC compile failed (exit $LASTEXITCODE) -- xem error tren" }
           if (-not (Test-Path "dist/GSH-Setup.exe")) {
-            Write-Error "GSH-Setup.exe not found"; exit 1
+            throw "GSH-Setup.exe not found after ISCC compile"
           }
           $size = (Get-Item "dist/GSH-Setup.exe").Length / 1MB
           Write-Host ("Installer size: {0:F1} MB" -f $size)
