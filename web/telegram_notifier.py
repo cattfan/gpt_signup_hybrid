@@ -191,7 +191,9 @@ class TelegramNotifier:
         return_url: str | None = None,
         log: LogFn | None = None,
     ) -> bool:
-        """Gửi QR + caption hết hạn, rồi reply combo dạng spoiler.
+        """Gửi QR (caption gồm email masked + thời điểm hết hạn). Combo reply
+        hiện đang DISABLED (xem comment block trong body) — caller chỉ nhận
+        ảnh QR, copy combo lấy từ Output pane trên web UI.
 
         Returns:
             True nếu đã gửi; False nếu skip (tắt toggle / chưa cấu hình / không có QR).
@@ -224,10 +226,15 @@ class TelegramNotifier:
             _fmt_expiry(qr_expires_at),
         ])
 
-        combo = f"{email}|{password}|{secret or ''}"
-        # Vừa spoiler vừa code: ẩn sau lớp spoiler, tap mở ra là code block
-        # với nút Copy (monospace). Telegram cho phép lồng <tg-spoiler> + <pre>.
-        reply_text = f"<tg-spoiler><pre>{html.escape(combo)}</pre></tg-spoiler>"
+        # ─── DISABLED: combo reply ─────────────────────────────────────────
+        # Hiện tại không gửi tin reply chứa `email|password|secret` (spam channel
+        # + đã có Output pane trên web UI để copy). Giữ code dạng comment để
+        # bật lại sau bằng cách uncomment block này + block sendMessage bên dưới.
+        # combo = f"{email}|{password}|{secret or ''}"
+        # # Vừa spoiler vừa code: ẩn sau lớp spoiler, tap mở ra là code block
+        # # với nút Copy (monospace). Telegram cho phép lồng <tg-spoiler> + <pre>.
+        # reply_text = f"<tg-spoiler><pre>{html.escape(combo)}</pre></tg-spoiler>"
+        # ──────────────────────────────────────────────────────────────────
 
         from curl_cffi import CurlMime
         from curl_cffi.requests import AsyncSession
@@ -255,20 +262,24 @@ class TelegramNotifier:
                 media_payload = await self._call(sess, method, data={}, multipart=mp)
             finally:
                 mp.close()
-            message_id = (
-                media_payload.get("result", {}).get("message_id")
-                if isinstance(media_payload.get("result"), dict) else None
-            )
-            reply_data: dict[str, Any] = {
-                "chat_id": self._chat_id,
-                "text": reply_text,
-                "parse_mode": "HTML",
-            }
-            if message_id is not None:
-                reply_data["reply_to_message_id"] = message_id
-            await self._call(sess, "sendMessage", data=reply_data)
+            # ─── DISABLED: combo reply (uncomment để bật lại) ──────────────
+            # message_id = (
+            #     media_payload.get("result", {}).get("message_id")
+            #     if isinstance(media_payload.get("result"), dict) else None
+            # )
+            # reply_data: dict[str, Any] = {
+            #     "chat_id": self._chat_id,
+            #     "text": reply_text,
+            #     "parse_mode": "HTML",
+            # }
+            # if message_id is not None:
+            #     reply_data["reply_to_message_id"] = message_id
+            # await self._call(sess, "sendMessage", data=reply_data)
+            # ──────────────────────────────────────────────────────────────
+            del media_payload  # currently unused — giữ block fetch để keep
+            # parity nếu uncomment reply ở trên.
 
-        _log(_tg_line("sent", "✓", "QR + combo (spoiler+code)"))
+        _log(_tg_line("sent", "✓", "QR only (combo reply disabled)"))
         return True
 
 

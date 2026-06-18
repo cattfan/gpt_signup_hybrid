@@ -84,26 +84,6 @@
           <span class="input-label">Timeout (s/job)</span>
           <input type="number" id="job-timeout" value="240" min="30" max="600" step="10" />
         </label>
-        <span class="settings-divider" aria-hidden="true"></span>
-        <label class="toggle-wrap" title="Fetch session JSON after signup + 2FA finishes">
-          <input type="checkbox" id="post-reg-session-toggle" />
-          <span class="toggle-track"><span class="toggle-thumb"></span></span>
-          <span class="toggle-label">Fetch Session</span>
-        </label>
-        <label class="toggle-wrap" title="Fetch payment link after signup + 2FA finishes">
-          <input type="checkbox" id="post-reg-link-toggle" />
-          <span class="toggle-track"><span class="toggle-thumb"></span></span>
-          <span class="toggle-label">Fetch Link</span>
-        </label>
-        <label class="input-group config-field-short" title="Region cho payment link (chỉ áp dụng khi Fetch Link bật)">
-          <span class="input-label">Link Region</span>
-          <select id="post-reg-link-region">
-            <option value="VN">VN</option>
-            <option value="ID">ID</option>
-            <option value="IN">IN</option>
-            <option value="US">US</option>
-          </select>
-        </label>
       </div>
     </div>
     <div class="card-actions">
@@ -262,6 +242,7 @@
     <header class="card-head">
       <h2>Jobs</h2>
       <div class="card-head-actions">
+        <button id="upi-btn-retry-expired-free" class="btn btn-ghost btn-small" title="Retry mọi job có QR hết hạn nhưng vẫn Free">Retry Expired+Free</button>
         <button id="upi-btn-retry-failed" class="btn btn-ghost btn-small" title="Retry all error & cancelled jobs">Retry Failed</button>
         <button id="upi-btn-clear-done" class="btn btn-ghost btn-small">Clear Done</button>
         <span class="muted" id="upi-job-summary">0 total</span>
@@ -280,7 +261,15 @@
     <pre id="upi-log-pane" class="log-pane"></pre>
   </section>
 
-  <section class="card card-error card-span-full">
+  <section class="card card-success">
+    <header class="card-head">
+      <h2>Output</h2>
+      <button id="upi-btn-copy-success" class="btn btn-ghost btn-small">Copy All</button>
+    </header>
+    <pre id="upi-success-pane" class="output-pane">Format: email|password|secret_2fa</pre>
+  </section>
+
+  <section class="card card-error">
     <header class="card-head">
       <h2>Error output</h2>
       <button id="upi-btn-copy-error" class="btn btn-ghost btn-small">Copy All</button>
@@ -799,8 +788,8 @@
       </div>
     </div>
     <footer class="modal-foot">
-      <button id="upi-qr-modal-copy-url" class="btn btn-ghost" type="button">Copy checkout URL</button>
-      <button id="upi-qr-modal-download" class="btn btn-ghost" type="button">Download PNG</button>
+      <button id="upi-qr-modal-copy-img" class="btn btn-ghost" type="button">Copy QR to Clipboard</button>
+      <button id="upi-qr-modal-retry" class="btn btn-primary" type="button" hidden>Retry</button>
       <button id="upi-qr-modal-open" class="btn btn-ghost" type="button">Mở tab mới</button>
       <button id="upi-qr-modal-ok" class="btn btn-primary" type="button">Đóng</button>
     </footer>

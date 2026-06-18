@@ -28,10 +28,13 @@
     jobSummary:    $('upi-job-summary'),
     logPane:       $('upi-log-pane'),
     logTarget:     $('upi-log-target'),
+    successPane:   $('upi-success-pane'),
     errorPane:     $('upi-error-pane'),
+    btnCopySuccess:$('upi-btn-copy-success'),
     btnCopyError:  $('upi-btn-copy-error'),
     btnClearDone:  $('upi-btn-clear-done'),
     btnRetryFailed:$('upi-btn-retry-failed'),
+    btnRetryExpiredFree: $('upi-btn-retry-expired-free'),
     // Modal
     modal:         $('upi-qr-modal'),
     modalImg:      $('upi-qr-modal-img'),
@@ -44,8 +47,8 @@
     modalExpIn:    $('upi-qr-modal-exp-in'),
     modalClose:    $('upi-qr-modal-close'),
     modalOk:       $('upi-qr-modal-ok'),
-    modalCopyUrl:  $('upi-qr-modal-copy-url'),
-    modalDownload: $('upi-qr-modal-download'),
+    modalCopyImg:  $('upi-qr-modal-copy-img'),
+    modalRetry:    $('upi-qr-modal-retry'),
     modalOpen:     $('upi-qr-modal-open'),
   };
 
@@ -261,7 +264,9 @@
       return r.blob().then((blob) => ({ blob, ct }));
     }).then(({ blob, ct }) => {
       const url = URL.createObjectURL(blob);
-      const entry = { url, finished_at: finishedAt, contentType: ct };
+      // Lưu cả blob lẫn url: url cho <img>/window.open, blob cho clipboard
+      // copy (Clipboard API yêu cầu Blob trực tiếp, không nhận blob URL).
+      const entry = { url, blob, finished_at: finishedAt, contentType: ct };
       qrBlobCache.set(jobId, entry);
       return entry;
     }).finally(() => {
@@ -370,16 +375,69 @@
   }
 
   // ── Render outputs ────────────────────────────────────────────────
+  // Output pane (xanh): liệt kê acc đã verify Plus dạng `email|password|secret`.
+  // Điều kiện: j.plan_check.is_plus === true (Q1=B). Bao gồm cả job từ
+  // _plus_cache (status='success' từ add_jobs hit cache) và job tự upgrade
+  // qua poller check_plan.
+  // Error pane (đỏ): job status='error' && KHÔNG phải Plus (tránh double-count
+  // case timeout-but-plus → đã hiển thị ở Output rồi).
+  // secretsCache: fetch riêng qua /api/upi/jobs/secrets (job.to_dict() KHÔNG
+  // expose password/secret để tránh leak qua SSE snapshot).
+  const secretsCache = new Map();
+  let _secretsRefreshScheduled = false;
+
+  function scheduleSecretsRefresh() {
+    if (_secretsRefreshScheduled) return;
+    _secretsRefreshScheduled = true;
+    // Debounce ~150ms — gom nhiều SSE event (job/status/log) vào 1 fetch.
+    setTimeout(() => {
+      _secretsRefreshScheduled = false;
+      refreshSecrets();
+    }, 150);
+  }
+
+  function refreshSecrets() {
+    return api('/api/upi/jobs/secrets').then((data) => {
+      const map = data.secrets || {};
+      // Replace entire cache (server là source of truth — job removed sẽ
+      // biến mất khỏi map). Không merge vì stale entry sẽ leak qua copy.
+      secretsCache.clear();
+      for (const id of Object.keys(map)) {
+        secretsCache.set(id, map[id] || {});
+      }
+      renderOutputs();
+    }).catch((err) => {
+      console.warn('[upi] refreshSecrets failed:', err && err.message);
+    });
+  }
+
   function renderOutputs() {
+    const successLines = [];
     const errorLines = [];
     for (const id of state.order) {
       const j = state.jobs.get(id);
       if (!j) continue;
-      if (j.status === 'error') {
+      const isPlus = !!(j.plan_check && j.plan_check.is_plus);
+      if (isPlus) {
+        const sec = secretsCache.get(id) || {};
+        const password = sec.password || j.password || '';
+        const secret = sec.secret || '';
+        // Format `email|password|secret_2fa` đồng nhất với Reg + format input
+        // UPI. Nếu thiếu secret (acc không 2FA) → bỏ field thay vì để pipe trống
+        // → giữ output paste-back được.
+        successLines.push(secret
+          ? `${j.email}|${password}|${secret}`
+          : `${j.email}|${password}`);
+      } else if (j.status === 'error' && j.error) {
         errorLines.push(`${j.email}  →  ${j.error || 'unknown'}`);
       }
     }
-    dom.errorPane.textContent = errorLines.length ? errorLines.join('\n') : 'No errors yet.';
+    dom.successPane.textContent = successLines.length
+      ? successLines.join('\n')
+      : 'Format: email|password|secret_2fa';
+    dom.errorPane.textContent = errorLines.length
+      ? errorLines.join('\n')
+      : 'No errors yet.';
   }
 
   // ── Render log ────────────────────────────────────────────────────
@@ -423,6 +481,34 @@
     const cd = fmtCountdown(_modalExpiresAt);
     dom.modalCountdown.textContent = _modalExpiresAt ? (cd.text || '-') : '-';
     dom.modalCountdown.classList.toggle('upi-countdown-expired', cd.expired);
+    _updateModalRetryVisibility();
+  }
+
+  // Nút Retry trong modal CHỈ hiện khi:
+  //   - Job status = success (đã ra QR rồi).
+  //   - QR đã expired (countdown <= 0).
+  //   - plan_check đã chạy thật (ok=true) — tránh hiện sớm khi chưa biết Plus
+  //     hay không, gây retry không cần thiết.
+  //   - Plan vẫn Free (is_plus=false) — đã verify mà chưa lên Plus → user
+  //     muốn chạy lại flow (đổi proxy / promo expired / Stripe drop).
+  // Mọi case khác → ẩn (kể cả khi đang poll plan, hoặc đã lên Plus → không
+  // cần retry nữa).
+  function _updateModalRetryVisibility() {
+    if (!dom.modalRetry) return;
+    if (!_modalActiveJobId || dom.modal.style.display === 'none') {
+      dom.modalRetry.hidden = true;
+      return;
+    }
+    const j = state.jobs.get(_modalActiveJobId);
+    if (!j || j.status !== 'success') {
+      dom.modalRetry.hidden = true;
+      return;
+    }
+    const cd = fmtCountdown(j.qr_expires_at);
+    const expired = !!(j.qr_expires_at && cd.expired);
+    const planChecked = !!(j.plan_check && j.plan_check.ok === true);
+    const stillFree = planChecked && j.plan_check.is_plus === false;
+    dom.modalRetry.hidden = !(expired && stillFree);
   }
 
   // Cập nhật mọi badge countdown trên job list (data-exp) + modal.
@@ -449,14 +535,14 @@
   function openQrModal(jobId) {
     const j = state.jobs.get(jobId);
     if (!j || !j.has_qr) return;
-    _modalActiveJobId = jobId;
-    dom.modalEmail.textContent = j.email;
+    _modalActiveJobId = jobId;    dom.modalEmail.textContent = j.email;
     dom.modalAmount.textContent = j.amount ? fmtAmount(j.amount) : '-';
     dom.modalSource.textContent = j.qr_source || '-';
     dom.modalCs.textContent = j.checkout_session || '-';
     _setModalExpiry(j.qr_expires_at);
     dom.modal.style.display = 'flex';
     if (dom.modalOk) dom.modalOk.focus();
+    _updateModalRetryVisibility();
 
     // Lấy ảnh từ Blob cache; nếu chưa có → fetch về (dùng spinner placeholder).
     const finishedAt = j.finished_at || 0;
@@ -484,6 +570,7 @@
     dom.modalImg.removeAttribute('src');
     _modalActiveJobId = null;
     _modalExpiresAt = null;
+    if (dom.modalRetry) dom.modalRetry.hidden = true;
   }
 
   dom.modalClose.addEventListener('click', closeQrModal);
@@ -497,23 +584,78 @@
     }
   });
 
-  dom.modalCopyUrl.addEventListener('click', () => {
-    if (!_modalActiveJobId) return;
-    const j = state.jobs.get(_modalActiveJobId);
-    if (j && j.return_url) window.GptUi.copyText(j.return_url);
-  });
-
-  dom.modalDownload.addEventListener('click', () => {
+  // Copy QR image vào clipboard (PNG). Yêu cầu Clipboard API (HTTPS hoặc
+  // localhost). Dùng ClipboardItem với async resolver Promise<Blob> để hỗ trợ
+  // Safari (Safari yêu cầu user-gesture sync, nên truyền Promise thay vì await
+  // blob trước khi gọi clipboard.write).
+  // Edge: SVG QR (qr_source dạng SVG) → convert sang PNG canvas trước khi copy
+  //   (Clipboard API không support image/svg+xml type mọi trình duyệt).
+  dom.modalCopyImg.addEventListener('click', async () => {
     if (!_modalActiveJobId) return;
     const j = state.jobs.get(_modalActiveJobId);
     const finishedAt = (j && j.finished_at) || 0;
-    fetchQrBlob(_modalActiveJobId, finishedAt).then((entry) => {
-      const ext = entry.contentType.includes('svg') ? 'svg' : 'png';
-      const a = document.createElement('a');
-      a.href = entry.url;
-      a.download = `upi_qr_${j ? j.email.replace(/[^a-zA-Z0-9]+/g, '_') : _modalActiveJobId}.${ext}`;
-      a.click();
-    }).catch((err) => Dialog.alert({ message: 'Download fail: ' + err.message }).catch(() => {}));
+    if (!navigator.clipboard || !window.ClipboardItem) {
+      await Dialog.alert({
+        message: 'Trình duyệt không hỗ trợ copy ảnh. Cần HTTPS hoặc localhost + Chrome/Edge/Safari mới.',
+      }).catch(() => {});
+      return;
+    }
+    try {
+      const entry = await fetchQrBlob(_modalActiveJobId, finishedAt);
+      // Đảm bảo image/png — convert nếu source là SVG.
+      let pngBlob = entry.blob;
+      if (!pngBlob || !pngBlob.type || !pngBlob.type.includes('png')) {
+        pngBlob = await _blobToPng(entry.url);
+      }
+      await navigator.clipboard.write([
+        new ClipboardItem({ 'image/png': pngBlob }),
+      ]);
+      // Notify nhẹ (không Dialog vì hành động tích cực) — re-use copyText
+      // toast nếu GptUi expose, fallback là log.
+      if (window.GptUi && typeof window.GptUi.toast === 'function') {
+        window.GptUi.toast('Đã copy QR vào clipboard');
+      }
+    } catch (err) {
+      await Dialog.alert({
+        message: 'Copy QR thất bại: ' + (err && err.message ? err.message : err),
+      }).catch(() => {});
+    }
+  });
+
+  // Convert image at given URL → PNG Blob qua canvas. Dùng cho case QR là SVG.
+  // CORS-safe: blob URL same-origin, canvas exportable.
+  function _blobToPng(url) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = img.naturalWidth || img.width || 512;
+        canvas.height = img.naturalHeight || img.height || 512;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          reject(new Error('canvas 2d context unavailable'));
+          return;
+        }
+        ctx.drawImage(img, 0, 0);
+        canvas.toBlob((blob) => {
+          if (blob) resolve(blob);
+          else reject(new Error('toBlob returned null'));
+        }, 'image/png');
+      };
+      img.onerror = () => reject(new Error('image decode failed'));
+      img.src = url;
+    });
+  }
+
+  dom.modalRetry.addEventListener('click', async () => {
+    if (!_modalActiveJobId) return;
+    const id = _modalActiveJobId;
+    closeQrModal();
+    try {
+      await api(`/api/upi/jobs/${id}/retry`, { method: 'POST' });
+    } catch (err) {
+      await Dialog.alert({ message: err.message }).catch(() => {});
+    }
   });
 
   dom.modalOpen.addEventListener('click', () => {
@@ -568,8 +710,33 @@
       const id = actionBtn.dataset.id;
       e.stopPropagation();
       if (action === 'retry') {
-        api(`/api/upi/jobs/${id}/retry`, { method: 'POST' })
-          .catch(async (err) => { await Dialog.alert({ message: err.message }); });
+        const j = state.jobs.get(id);
+        // Cached Plus job (Q-A flow): yêu cầu xác nhận → DELETE cache → POST retry.
+        // from_cache=true chỉ set ở backend khi add_jobs hit _plus_cache;
+        // job tự lên Plus qua check_plan KHÔNG có cờ này nên không bị block.
+        if (j && j.plan_check && j.plan_check.from_cache) {
+          (async () => {
+            const ok = await Dialog.confirm({
+              message: `Acc ${j.email} đã verify Plus (cached). Vẫn chạy lại flow UPI?\n\nXoá cache và chạy probe mới.`,
+            });
+            if (!ok) return;
+            try {
+              await api(`/api/upi/plus/${encodeURIComponent(j.email)}`, {
+                method: 'DELETE',
+              });
+            } catch (err) {
+              console.warn('[upi] clear plus cache failed:', err && err.message);
+              // Tiếp tục retry — backend retry sẽ enqueue + chạy login lại,
+              // is_plus chỉ ảnh hưởng add_jobs, không block retry. Cache fail
+              // chỉ là vấn đề nếu user re-paste sau.
+            }
+            api(`/api/upi/jobs/${id}/retry`, { method: 'POST' })
+              .catch(async (err) => { await Dialog.alert({ message: err.message }); });
+          })();
+        } else {
+          api(`/api/upi/jobs/${id}/retry`, { method: 'POST' })
+            .catch(async (err) => { await Dialog.alert({ message: err.message }); });
+        }
       } else if (action === 'stop' || action === 'remove') {
         api(`/api/upi/jobs/${id}`, { method: 'DELETE' })
           .catch(async (err) => { await Dialog.alert({ message: err.message }); });
@@ -652,6 +819,36 @@
     }
   });
 
+  dom.btnRetryExpiredFree.addEventListener('click', async () => {
+    // Đếm preview ở client để Dialog hỏi có ngữ cảnh số job sẽ retry. Server
+    // sẽ filter lại bằng đúng predicate (xem retry_expired_free) — count
+    // client chỉ là hint, có thể lệch nhẹ nếu state vừa đổi giữa render
+    // và click.
+    const now = Date.now() / 1000;
+    let count = 0;
+    for (const id of state.order) {
+      const j = state.jobs.get(id);
+      if (!j || j.status !== 'success') continue;
+      if (!j.qr_expires_at || j.qr_expires_at >= now) continue;
+      const pc = j.plan_check;
+      if (!pc || pc.ok !== true || pc.is_plus) continue;
+      count++;
+    }
+    if (count === 0) {
+      await Dialog.alert({
+        message: 'Không có job nào hết hạn QR mà vẫn Free.\n\nĐiều kiện: success + qr_expired + plan_check ok=true + is_plus=false.',
+      }).catch(() => {});
+      return;
+    }
+    if (!(await Dialog.confirm({ message: `Retry ${count} job hết hạn + Free?` }))) return;
+    try {
+      const res = await api('/api/upi/jobs/retry-expired-free', { method: 'POST' });
+      console.log('[upi] retry-expired-free:', res.retried);
+    } catch (err) {
+      await Dialog.alert({ message: 'Error: ' + err.message });
+    }
+  });
+
   dom.approveRetries.addEventListener('change', async () => {
     const val = parseInt(dom.approveRetries.value, 10);
     if (isNaN(val) || val < 1) return;
@@ -702,6 +899,10 @@
     window.GptUi.copyText(dom.errorPane.textContent);
   });
 
+  dom.btnCopySuccess.addEventListener('click', () => {
+    window.GptUi.copyText(dom.successPane.textContent);
+  });
+
   // ── SSE ───────────────────────────────────────────────────────────
   function _maybePrefetchQr(j) {
     // Job vừa success + có QR → tải blob về cache local ngay (không đợi user mở modal).
@@ -734,6 +935,9 @@
     }
     renderJobs();
     renderOutputs();
+    // Snapshot có thể chứa job mới (cached Plus từ add_jobs); cần fetch
+    // password/secret để render Output pane đúng format.
+    scheduleSecretsRefresh();
   }
 
   function applyJobUpdate(j) {
@@ -761,6 +965,11 @@
       dom.modalSource.textContent = j.qr_source || '-';
       dom.modalCs.textContent = j.checkout_session || '-';
       _setModalExpiry(j.qr_expires_at);
+      // plan_check có thể vừa update → re-evaluate retry button visibility
+      // (countdown đã ăn _setModalExpiry → _tickModalCountdown đã gọi rồi,
+      // nhưng plan_check có thể đổi mà không kèm qr_expires_at đổi → call
+      // tường minh để chắc).
+      _updateModalRetryVisibility();
       if (j.has_qr) {
         fetchQrBlob(j.id, j.finished_at || 0).then((entry) => {
           if (_modalActiveJobId === j.id) {
@@ -772,6 +981,16 @@
 
     if (j.status === 'error' && (!prev || prev.status !== 'error') && window.GptUi?.playErrorAlert) {
       window.GptUi.playErrorAlert();
+    }
+
+    // Job mới hoặc plan_check thay đổi (đặc biệt is_plus đổi true) → cần
+    // password/secret cho Output pane. Fetch secrets khi:
+    //   - Job mới xuất hiện (prev null)
+    //   - is_plus chuyển true (acc vừa lên Plus qua poller hoặc post-timeout)
+    const wasPlus = prev && prev.plan_check && prev.plan_check.is_plus;
+    const nowPlus = j.plan_check && j.plan_check.is_plus;
+    if (!prev || (nowPlus && !wasPlus)) {
+      scheduleSecretsRefresh();
     }
   }
 

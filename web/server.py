@@ -1728,6 +1728,31 @@ async def retry_upi_job(job_id: str) -> JSONResponse:
     return JSONResponse({"ok": ok})
 
 
+@app.get("/api/upi/jobs/secrets")
+async def get_upi_jobs_secrets() -> JSONResponse:
+    """Trả map job_id → {email, password, secret} cho mọi UPI job hiện hành.
+
+    Frontend dùng để render Output pane (`email|password|secret`) cho job đã
+    verify Plus — secret KHÔNG nằm trong job.to_dict() / SSE broadcast (cố ý
+    để tránh leak qua snapshot). Auth đã cover bởi middleware.
+    """
+    um = get_upi_manager()
+    return JSONResponse({"secrets": um.get_secrets_map()})
+
+
+@app.delete("/api/upi/plus/{email:path}")
+async def delete_upi_plus_cache(email: str) -> JSONResponse:
+    """Xoá entry plus cache cho 1 email (case-insensitive).
+
+    Dùng khi user xác nhận force-retry một acc đã verify Plus
+    (Q-A flow: Dialog.confirm trên frontend → DELETE cache → POST retry).
+    Path param ``{email:path}`` cho phép `@` và `.` không cần URL-encode.
+    """
+    um = get_upi_manager()
+    removed = um.clear_plus_cache(email)
+    return JSONResponse({"removed": removed, "email": email.lower()})
+
+
 @app.post("/api/upi/jobs/{job_id}/check-session")
 async def check_upi_job_session(job_id: str) -> JSONResponse:
     """Gọi /api/auth/session bằng cookies đã lưu để biết account còn Plus.
@@ -1773,6 +1798,18 @@ async def retry_failed_upi_jobs() -> JSONResponse:
     """Retry tất cả UPI jobs có status error hoặc cancelled."""
     um = get_upi_manager()
     retried = await um.retry_failed()
+    return JSONResponse({"retried": retried})
+
+
+@app.post("/api/upi/jobs/retry-expired-free")
+async def retry_expired_free_upi_jobs() -> JSONResponse:
+    """Retry tất cả UPI jobs có QR hết hạn nhưng vẫn Free (chưa lên Plus).
+
+    Điều kiện cụ thể: xem ``UpiJobManager.retry_expired_free`` docstring.
+    Frontend gọi qua nút "Retry Expired+Free" ở header card-jobs (tab UPI).
+    """
+    um = get_upi_manager()
+    retried = await um.retry_expired_free()
     return JSONResponse({"retried": retried})
 
 

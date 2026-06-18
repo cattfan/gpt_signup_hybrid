@@ -166,10 +166,6 @@
     mailModeSelect: $('mail-mode-select'),
     regModeSelect: $('reg-mode-select'),
     mailModeConfigHost: $('mail-mode-config-host'),
-    // Post-reg toggles
-    postRegSessionToggle: $('post-reg-session-toggle'),
-    postRegLinkToggle: $('post-reg-link-toggle'),
-    postRegLinkRegion: $('post-reg-link-region'),
   };
 
   // ── Helpers ───────────────────────────────────────────────────────
@@ -326,33 +322,15 @@
       const actionBtn = j.status === 'running'
         ? `<button class="icon-btn icon-danger" data-action="stop" data-id="${escHtml(id)}" title="Stop">${icon('stop')}</button>`
         : `<button class="icon-btn" data-action="retry" data-id="${escHtml(id)}" title="Retry">${icon('retry')}</button>`;
-      let postRegBtns = '';
-      if (j.has_session) {
-        postRegBtns += `<button class="icon-btn" data-action="copy-session" data-id="${escHtml(id)}" title="Copy session JSON">${icon('copy')}</button>`;
-        postRegBtns += `<button class="icon-btn" data-action="download-session" data-id="${escHtml(id)}" title="Download session JSON">${icon('download')}</button>`;
-      }
-      if (j.payment_link) {
-        postRegBtns += `<button class="icon-btn" data-action="copy-link" data-id="${escHtml(id)}" title="Copy payment link">${icon('link')}</button>`;
-      }
-      // Nút rerun-link: hiển thị khi job đã có session_path (success hoặc 2fa-error sau signup).
-      // Backend đọc access_token từ session.json — cần file tồn tại.
-      if (j.has_session_path && j.status !== 'running') {
-        postRegBtns += `<button class="icon-btn" data-action="rerun-link" data-id="${escHtml(id)}" title="Re-fetch payment link">${icon('retry')}</button>`;
-      }
-      const linkLine = j.payment_link
-        ? `<div class="job-meta" title="${escHtml(j.payment_link)}"><span class="muted">[${escHtml(j.region || '?')}]</span> ${escHtml(j.payment_link)}</div>`
-        : '';
       return `
         <div class="${cls}" data-id="${escHtml(id)}">
           <div class="job-index">${idx + 1}</div>
           <div class="job-status status-${escHtml(j.status)}">${escHtml(j.status)}</div>
           <div class="job-main">
             <div class="job-email" title="${escHtml(j.email)}">${escHtml(j.email)}<span class="badge-mode badge-mode-${escHtml(j.mail_mode || 'outlook')}">${escHtml(j.mail_mode || 'outlook')}</span></div>
-            ${linkLine}
           </div>
           <div class="job-duration">${escHtml(fmtDuration(j.duration))}</div>
           <div class="job-actions">
-            ${postRegBtns}
             ${actionBtn}
             <button class="icon-btn icon-danger" data-action="remove" data-id="${escHtml(id)}" title="Remove">${icon('remove')}</button>
           </div>
@@ -494,34 +472,6 @@
         const j = state.jobs.get(id);
         if (j) removeFromTextarea(j.email);
         api(`/api/jobs/${id}`, { method: 'DELETE' }).catch(async (err) => { await Dialog.alert({ message: err.message }); });
-      } else if (action === 'copy-session') {
-        api(`/api/jobs/${id}`).then(d => {
-          if (d.session_data) {
-            copyText(JSON.stringify(d.session_data, null, 2));
-          }
-        }).catch(console.error);
-      } else if (action === 'download-session') {
-        api(`/api/jobs/${id}`).then(d => {
-          if (d.session_data) {
-            const blob = new Blob([JSON.stringify(d.session_data, null, 2)], { type: 'application/json' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `session_${d.email || id}.json`;
-            a.click();
-            URL.revokeObjectURL(url);
-          }
-        }).catch(console.error);
-      } else if (action === 'copy-link') {
-        const j = state.jobs.get(id);
-        if (j && j.payment_link) copyText(j.payment_link);
-      } else if (action === 'rerun-link') {
-        // 3B: rerun dùng region GỐC của job (snapshot lúc add_jobs).
-        // Backend fallback: job.region → post_reg_link_region nếu job.region null.
-        api(`/api/jobs/${id}/rerun-link`, {
-          method: 'POST',
-          body: JSON.stringify({}),
-        }).catch(async (err) => { await Dialog.alert({ message: err.message }); });
       }
       return;
     }
@@ -700,46 +650,6 @@
     }
   });
 
-  dom.postRegSessionToggle.addEventListener('change', async () => {
-    const val = dom.postRegSessionToggle.checked;
-    try {
-      await api('/api/config', {
-        method: 'POST',
-        body: JSON.stringify({ post_reg_get_session: val }),
-      });
-    } catch (err) {
-      console.error(err);
-      dom.postRegSessionToggle.checked = !val;
-    }
-  });
-
-  dom.postRegLinkToggle.addEventListener('change', async () => {
-    const val = dom.postRegLinkToggle.checked;
-    try {
-      await api('/api/config', {
-        method: 'POST',
-        body: JSON.stringify({ post_reg_get_link: val }),
-      });
-    } catch (err) {
-      console.error(err);
-      dom.postRegLinkToggle.checked = !val;
-    }
-  });
-
-  if (dom.postRegLinkRegion) {
-    dom.postRegLinkRegion.addEventListener('change', async () => {
-      const val = dom.postRegLinkRegion.value;
-      try {
-        await api('/api/config', {
-          method: 'POST',
-          body: JSON.stringify({ post_reg_link_region: val }),
-        });
-      } catch (err) {
-        console.error(err);
-      }
-    });
-  }
-
   dom.jobTimeout.addEventListener('change', async () => {
     const val = parseInt(dom.jobTimeout.value, 10);
     if (isNaN(val) || val < 30 || val > 600) return;
@@ -848,15 +758,6 @@
       }
       if (data.job_timeout) {
         dom.jobTimeout.value = data.job_timeout;
-      }
-      if (typeof data.post_reg_get_session === 'boolean') {
-        dom.postRegSessionToggle.checked = data.post_reg_get_session;
-      }
-      if (typeof data.post_reg_get_link === 'boolean') {
-        dom.postRegLinkToggle.checked = data.post_reg_get_link;
-      }
-      if (typeof data.post_reg_link_region === 'string' && dom.postRegLinkRegion) {
-        dom.postRegLinkRegion.value = data.post_reg_link_region;
       }
       applySnapshot(data.jobs);
     } else if (data.type === 'job') {
@@ -1060,17 +961,6 @@
     const jobTimeout = Settings.get('reg.job_timeout');
     if (typeof jobTimeout === 'number') dom.jobTimeout.value = jobTimeout;
 
-    const postRegSession = Settings.get('reg.post_reg_get_session');
-    if (typeof postRegSession === 'boolean') dom.postRegSessionToggle.checked = postRegSession;
-
-    const postRegLink = Settings.get('reg.post_reg_get_link');
-    if (typeof postRegLink === 'boolean') dom.postRegLinkToggle.checked = postRegLink;
-
-    const postRegLinkRegion = Settings.get('reg.post_reg_link_region');
-    if (typeof postRegLinkRegion === 'string' && dom.postRegLinkRegion) {
-      dom.postRegLinkRegion.value = postRegLinkRegion;
-    }
-
     const autoRetry = Settings.get('reg.auto_retry');
     const autoRetryMax = Settings.get('reg.auto_retry_max');
     if (typeof autoRetryMax === 'number') {
@@ -1091,15 +981,6 @@
       }
       if (typeof cfg.job_timeout === 'number') {
         dom.jobTimeout.value = cfg.job_timeout;
-      }
-      if (typeof cfg.post_reg_get_session === 'boolean') {
-        dom.postRegSessionToggle.checked = cfg.post_reg_get_session;
-      }
-      if (typeof cfg.post_reg_get_link === 'boolean') {
-        dom.postRegLinkToggle.checked = cfg.post_reg_get_link;
-      }
-      if (typeof cfg.post_reg_link_region === 'string' && dom.postRegLinkRegion) {
-        dom.postRegLinkRegion.value = cfg.post_reg_link_region;
       }
       if (typeof cfg.auto_retry_max === 'number') {
         dom.autoRetryMax.value = cfg.auto_retry ? cfg.auto_retry_max : 0;

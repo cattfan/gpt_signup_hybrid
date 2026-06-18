@@ -4035,6 +4035,13 @@ class UpiJobManager:
         self._workers: list[asyncio.Task] = []
         self._worker_started = False
         self._shutting_down: bool = False
+        # In-memory cache: email (lowercase) → {plan, verified_at, source,
+        # active_proxy}. Lifecycle = process lifetime (mất khi restart server).
+        # Thêm khi check_plan() trả is_plus=True; xoá khi recheck rớt khỏi Plus
+        # hoặc user force-retry. add_jobs() check cache để skip flow probe khi
+        # email đã verify Plus (frontend hiển thị status='success' ngay,
+        # plan_check.from_cache=True).
+        self._plus_cache: dict[str, dict[str, Any]] = {}
 
     # ── Properties ──────────────────────────────────────────────────────
     @property
@@ -4213,6 +4220,43 @@ class UpiJobManager:
                 continue
             existing_emails.add(email.lower())
             jid = uuid.uuid4().hex[:12]
+            # Plus cache hit → skip flow probe, tạo job ở status='success' với
+            # plan_check.from_cache=True. UI render ngay vào output list mà
+            # không cần chạy login + checkout. Cache lifecycle in-memory: mất
+            # khi server restart; user retry-after-restart sẽ chạy probe lại.
+            cached_plus = self._plus_cache.get(email.lower())
+            if cached_plus is not None:
+                now = time.time()
+                job = UpiJob(
+                    id=jid,
+                    email=email,
+                    password=password,
+                    secret=secret,
+                    status="success",
+                    error=None,
+                    finished_at=now,
+                    plan_check={
+                        "ok": True,
+                        "plan": cached_plus.get("plan"),
+                        "is_plus": True,
+                        "expires": None,
+                        "checked_at": int(cached_plus.get("verified_at", now)),
+                        "error": None,
+                        "from_cache": True,
+                        "source": cached_plus.get("source") or "check_plan",
+                    },
+                )
+                self.jobs[jid] = job
+                self.order.append(jid)
+                self._broadcast_job(job)
+                self._job_log(
+                    job,
+                    f"[plus-cache] hit — skip flow (verified at "
+                    f"{int(cached_plus.get('verified_at', now))}, "
+                    f"plan={cached_plus.get('plan') or '?'})",
+                )
+                out.append(job)
+                continue
             job = UpiJob(id=jid, email=email, password=password, secret=secret)
             self.jobs[jid] = job
             self.order.append(jid)
@@ -4427,6 +4471,25 @@ class UpiJobManager:
         }
         self._job_log(job, f"[check-plan] plan={plan or '?'} is_plus={is_plus}")
         job.plan_check = result
+        # Plus cache write-through + self-heal:
+        #   is_plus=True  → upsert cache (email lowercase) để lần paste sau
+        #                   skip flow probe.
+        #   is_plus=False → DELETE cache nếu có (recheck self-heal: acc bị
+        #                   churn / rớt Plus → không trả false-positive nữa).
+        # Wrap try/except defensive — cache fail KHÔNG break check_plan response.
+        try:
+            email_key = job.email.lower()
+            if is_plus:
+                self._plus_cache[email_key] = {
+                    "plan": plan,
+                    "verified_at": int(time.time()),
+                    "source": "check_plan",
+                    "active_proxy": job._active_proxy,
+                }
+            else:
+                self._plus_cache.pop(email_key, None)
+        except Exception as exc:  # noqa: BLE001 — cache best-effort
+            _log.warning("UpiMgr: plus_cache update failed for %s: %s", job.email, exc)
         self._broadcast_job(job)
         return result
 
@@ -4489,6 +4552,44 @@ class UpiJobManager:
                 retried += 1
         return retried
 
+    async def retry_expired_free(self) -> int:
+        """Retry tất cả UPI jobs có QR đã hết hạn nhưng vẫn FREE (chưa lên Plus).
+
+        Điều kiện match (tất cả phải đúng):
+          - status == 'success' (đã ra QR thật, không phải error/cancelled).
+          - qr_expires_at < time.time() (QR đã hết hạn).
+          - plan_check.ok is True (đã verify thật, KHÔNG retry job chưa check
+            kịp — tránh retry sớm khi plan có thể đang chuyển trạng thái).
+          - plan_check.is_plus is False (vẫn Free — chính là case user muốn
+            chạy lại flow để hy vọng promo / proxy / Stripe ổn hơn lần sau).
+
+        Job cached (plan_check.from_cache=True) tự động bị loại vì cached
+        nghĩa là is_plus=True → không match điều kiện trên.
+
+        Return:
+            Số job đã retry thành công.
+        """
+        now = time.time()
+        targets: list[str] = []
+        for jid, job in self.jobs.items():
+            if job.status != "success":
+                continue
+            if not job.qr_expires_at or job.qr_expires_at >= now:
+                continue
+            pc = job.plan_check
+            if not pc or pc.get("ok") is not True:
+                continue
+            if pc.get("is_plus"):
+                continue
+            targets.append(jid)
+
+        retried = 0
+        for jid in targets:
+            ok = await self.retry_job(jid)
+            if ok:
+                retried += 1
+        return retried
+
     # ── Telegram notify ─────────────────────────────────────────────────
     async def _notify_telegram(self, job: UpiJob) -> None:
         """Gửi QR + combo qua Telegram (best-effort). Không raise ra ngoài.
@@ -4527,6 +4628,11 @@ class UpiJobManager:
     # ── Run job ─────────────────────────────────────────────────────────
     async def _run_job(self, job: UpiJob) -> None:
         self._tasks[job.id] = asyncio.current_task()  # type: ignore[arg-type]
+        # auth_sink: runner fill {access_token, session_cookies, active_proxy}
+        # NGAY sau Step1 login OK. Khi wait_for(...) raise TimeoutError, sink
+        # vẫn còn dữ liệu → set vào job + spawn check_plan để detect
+        # "timeout-but-plus" case (acc đã upgrade nhưng approve loop bị kill).
+        auth_sink: dict[str, Any] = {}
         try:
             if job.id not in self.jobs:
                 return
@@ -4565,6 +4671,7 @@ class UpiJobManager:
                     restart_threshold=self._restart_threshold,
                     max_restarts=self._max_restarts,
                     proxy_from_step=self._proxy_from_step,
+                    auth_sink=auth_sink,
                 ),
                 timeout=self._job_timeout,
             )
@@ -4635,6 +4742,25 @@ class UpiJobManager:
             job.error = error_msg
             job.finished_at = time.time()
             self._job_log(job, f"[fatal] {error_msg}")
+            # Lưu auth artifacts từ sink (nếu Step1 login đã OK trước khi
+            # timeout). Cần để check_plan() tiếp cận entitlement endpoint —
+            # acc có thể đã pump lên Plus dù approve loop bị kill bởi timeout.
+            sink_token = auth_sink.get("access_token")
+            sink_cookies = auth_sink.get("session_cookies")
+            if isinstance(sink_token, str) and sink_token and sink_cookies:
+                job._access_token = sink_token
+                job._session_cookies = sink_cookies
+                job._active_proxy = auth_sink.get("active_proxy")
+                self._job_log(
+                    job,
+                    "[plus-probe] timeout với auth artifacts — spawn "
+                    "check_plan để detect Plus state",
+                )
+                # Spawn detached: KHÔNG await trong handler để asyncio task
+                # có thể return ngay. check_plan sẽ broadcast lại job khi
+                # xong → frontend cập nhật plan_check + push vào output nếu
+                # is_plus=True. Cache cũng được write-through từ check_plan.
+                asyncio.create_task(self._post_timeout_check_plan(job.id))
             self._broadcast_job(job)
         except asyncio.CancelledError:
             if not self._shutting_down and job.id in self.jobs:
@@ -4663,6 +4789,63 @@ class UpiJobManager:
             self._broadcast_job(job)
         finally:
             self._tasks.pop(job.id, None)
+
+    async def _post_timeout_check_plan(self, job_id: str) -> None:
+        """Detached: gọi check_plan sau khi job timeout với auth artifacts.
+
+        Tách method riêng để asyncio.create_task có Coroutine cleanup, đồng
+        thời wrap try/except — exception trong detached task KHÔNG được
+        loop unhandle (Python sẽ log warning nhưng không kill server).
+
+        check_plan() đã handle mọi error path (SessionError, network) +
+        write-through cache khi is_plus=True → ở đây chỉ cần await + log.
+        """
+        job = self.jobs.get(job_id)
+        if job is None:
+            return
+        try:
+            await self.check_plan(job_id)
+        except Exception as exc:  # noqa: BLE001 — detached task, swallow
+            _log.warning(
+                "UpiMgr: post-timeout check_plan failed for %s: %s",
+                job.email, exc,
+            )
+
+    def clear_plus_cache(self, email: str) -> bool:
+        """Xoá entry plus cache cho 1 email (lowercase key).
+
+        Frontend gọi qua DELETE /api/upi/plus/{email} TRƯỚC khi force-retry
+        một acc đã từng verify Plus (Q-A flow: Dialog.confirm → xoá cache →
+        retry chạy probe lại).
+
+        Returns:
+            True nếu có entry và đã xoá; False nếu không có.
+        """
+        return self._plus_cache.pop(email.lower(), None) is not None
+
+    def list_plus_cache(self) -> list[dict[str, Any]]:
+        """Snapshot cache hiện tại — debug/admin dùng. Không expose qua public
+        endpoint mặc định."""
+        return [
+            {"email": email, **entry}
+            for email, entry in self._plus_cache.items()
+        ]
+
+    def get_secrets_map(self) -> dict[str, dict[str, str | None]]:
+        """Trả map job_id → {email, password, secret} cho mọi job đang trong
+        manager. Dùng cho frontend render Output list (`email|password|secret`)
+        mà KHÔNG đưa secret vào job.to_dict() / SSE broadcast (tránh leak qua
+        snapshot/SSE). Pattern giống JobManager.get_secrets_map().
+        """
+        return {
+            jid: {
+                "email": self.jobs[jid].email,
+                "password": self.jobs[jid].password,
+                "secret": self.jobs[jid].secret,
+            }
+            for jid in self.order
+            if jid in self.jobs
+        }
 
 
 # Singleton

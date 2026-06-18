@@ -1067,6 +1067,7 @@ async def run_upi_qr_probe(
     restart_threshold: int = 0,
     max_restarts: int = 0,
     proxy_from_step: int = PROXY_FROM_STEP,
+    auth_sink: dict[str, Any] | None = None,
 ) -> UpiQrResult:
     """Login + checkout + confirm UPI + approve loop → save QR PNG.
 
@@ -1087,6 +1088,13 @@ async def run_upi_qr_probe(
             ``pay_upi_http._ProxyPolicy`` schema). Default lấy từ
             ``PROXY_FROM_STEP``. Khi =1, step 1 (login) cũng route qua
             ``proxy_pool[0]``; ngược lại login DIRECT.
+        auth_sink: optional mutable dict — runner sẽ fill 3 keys NGAY sau khi
+            login Step1 thành công: ``access_token``, ``session_cookies``,
+            ``active_proxy``. Caller (UpiJobManager) đọc dict này khi
+            ``wait_for(...)`` raise ``TimeoutError`` để vẫn check_plan được
+            (acc có thể đã lên Plus dù approve loop bị kill bởi timeout).
+            None = không expose token sớm (caller lấy từ ``UpiQrResult`` cuối
+            cùng — KHÔNG khả dụng nếu timeout).
 
     Returns:
         UpiQrResult — luôn trả (kể cả khi fail), KHÔNG raise. Caller check
@@ -1234,6 +1242,24 @@ async def run_upi_qr_probe(
         )
     user_email = (session_data.get("user") or {}).get("email") or masked_email
     _safe_log(_fmt_step("1/6", "login", "ok", f"user={user_email}"))
+
+    # Expose auth artifacts cho caller NGAY sau login OK — caller (UpiJobManager)
+    # đọc khi `wait_for(...)` raise TimeoutError để vẫn check_plan được (acc có
+    # thể đã lên Plus dù approve loop bị kill bởi timeout). Best-effort: fill
+    # mọi key, missing key = caller ignore.
+    if auth_sink is not None:
+        try:
+            auth_sink["access_token"] = access_token
+            auth_sink["session_cookies"] = (
+                session_data.get("__cookies")
+                if isinstance(session_data, dict) else None
+            )
+            # active_proxy = first_proxy concrete (= IP login đã dùng / sẽ dùng
+            # cho Stripe Steps khi proxy_from_step <= 5). check_plan replay qua
+            # đúng IP → tránh 403/correlation entitlement endpoint.
+            auth_sink["active_proxy"] = first_proxy
+        except Exception:  # noqa: BLE001 — sink fill best-effort, không break flow
+            pass
 
     stripe_js_id = str(uuid.uuid4())
     confirm_attempts: list[dict[str, Any]] = []
