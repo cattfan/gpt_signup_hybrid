@@ -3967,8 +3967,12 @@ def _extract_plan_from_session(session_data: dict[str, Any] | None) -> str | Non
     return None
 _DEFAULT_UPI_JOB_TIMEOUT = 1800.0  # 30 phút — đủ cho 500 retries × 3s + buffer
 _DEFAULT_UPI_APPROVE_RETRIES = 500
-_DEFAULT_UPI_RESTART_THRESHOLD = 30  # consec exception trước khi restart checkout
-_DEFAULT_UPI_MAX_RESTARTS = 3        # số lần restart tối đa / job
+_DEFAULT_UPI_APPROVE_RETRY_DELAY = 5.0  # giây — Stripe approve floor để tránh `blocked` rate-limit
+# Mặc định: mỗi `result=exception` LIÊN TIẾP là 1 lần restart checkout
+# (theo yêu cầu UI). Quota 500 ≈ approve_retries default — không cạn giữa job.
+# User có thể override qua Settings (UI input).
+_DEFAULT_UPI_RESTART_THRESHOLD = 1
+_DEFAULT_UPI_MAX_RESTARTS = 500
 _DEFAULT_UPI_PROXY_FROM_STEP = 3     # giữ default cũ — step 1-2 DIRECT, 3-6 via proxy
 
 
@@ -4064,6 +4068,7 @@ class UpiJobManager:
         self._max = max_concurrent
         self._job_timeout = _DEFAULT_UPI_JOB_TIMEOUT
         self._approve_retries = _DEFAULT_UPI_APPROVE_RETRIES
+        self._approve_retry_delay = _DEFAULT_UPI_APPROVE_RETRY_DELAY
         self._restart_threshold = _DEFAULT_UPI_RESTART_THRESHOLD
         self._max_restarts = _DEFAULT_UPI_MAX_RESTARTS
         self._proxy_from_step = _DEFAULT_UPI_PROXY_FROM_STEP
@@ -4110,6 +4115,18 @@ class UpiJobManager:
         self._approve_retries = n
 
     @property
+    def approve_retry_delay(self) -> float:
+        return self._approve_retry_delay
+
+    def set_approve_retry_delay(self, seconds: float) -> None:
+        # Floor 5s = empirical Stripe approve rate-limit threshold (đã reproduce
+        # bug `blocked` http=200 lặp lại với 3s delay). Cap 60s — > 60s vô nghĩa
+        # với QR expire 5 phút.
+        if seconds < 5 or seconds > 60:
+            raise ValueError("approve_retry_delay phải trong [5, 60] giây")
+        self._approve_retry_delay = float(seconds)
+
+    @property
     def restart_threshold(self) -> int:
         return self._restart_threshold
 
@@ -4123,8 +4140,8 @@ class UpiJobManager:
         return self._max_restarts
 
     def set_max_restarts(self, n: int) -> None:
-        if n < 0 or n > 100:
-            raise ValueError("max_restarts phải trong [0, 100]")
+        if n < 0 or n > 2000:
+            raise ValueError("max_restarts phải trong [0, 2000]")
         self._max_restarts = n
 
     @property
@@ -4151,13 +4168,17 @@ class UpiJobManager:
             val = int(settings["upi.approve_retries"])
             if 1 <= val <= 2000:
                 self._approve_retries = val
+        if "upi.approve_retry_delay" in settings:
+            val = float(settings["upi.approve_retry_delay"])
+            if 5.0 <= val <= 60.0:
+                self._approve_retry_delay = val
         if "upi.approve.restart_threshold" in settings:
             val = int(settings["upi.approve.restart_threshold"])
             if 0 <= val <= 1000:
                 self._restart_threshold = val
         if "upi.approve.max_restarts" in settings:
             val = int(settings["upi.approve.max_restarts"])
-            if 0 <= val <= 100:
+            if 0 <= val <= 2000:
                 self._max_restarts = val
         if "upi.proxy_from_step" in settings:
             val = int(settings["upi.proxy_from_step"])
@@ -4766,6 +4787,7 @@ class UpiJobManager:
                     restart_threshold=self._restart_threshold,
                     max_restarts=self._max_restarts,
                     proxy_from_step=self._proxy_from_step,
+                    approve_retry_delay=self._approve_retry_delay,
                     auth_sink=auth_sink,
                 ),
                 timeout=self._job_timeout,

@@ -11,6 +11,7 @@
     activeJobId: null,
     maxConcurrent: 1,
     approveRetries: 500,
+    approveRetryDelay: 5,
   };
 
   const $ = (id) => document.getElementById(id);
@@ -21,6 +22,9 @@
     btnClearInput: $('upi-btn-clear-input'),
     comboCount:    $('upi-combo-count'),
     approveRetries:$('upi-approve-retries'),
+    approveRetryDelay: $('upi-approve-retry-delay'),
+    restartThreshold: $('upi-restart-threshold'),
+    maxRestarts: $('upi-max-restarts'),
     jobTimeout:    $('upi-job-timeout'),
     proxyFromStep: $('upi-proxy-from-step'),
     notifyToggle:  $('upi-notify-toggle'),
@@ -851,6 +855,9 @@
       };
       const target = _modeMap[document.getElementById('mode').value] || 1;
       const approveRetries = parseInt(dom.approveRetries.value, 10) || 500;
+      const approveRetryDelay = parseInt(dom.approveRetryDelay.value, 10) || 5;
+      const restartThreshold = parseInt(dom.restartThreshold.value, 10);
+      const maxRestarts = parseInt(dom.maxRestarts.value, 10);
       const jobTimeout = parseInt(dom.jobTimeout.value, 10) || 1800;
       const proxyFromStep = parseInt(dom.proxyFromStep.value, 10) || 3;
       await api('/api/upi/config', {
@@ -859,6 +866,9 @@
           max_concurrent: target,
           job_timeout: jobTimeout,
           approve_retries: approveRetries,
+          approve_retry_delay: approveRetryDelay,
+          restart_threshold: isNaN(restartThreshold) ? 1 : restartThreshold,
+          max_restarts: isNaN(maxRestarts) ? 500 : maxRestarts,
           proxy_from_step: proxyFromStep,
         }),
       });
@@ -954,6 +964,69 @@
     } catch (err) { console.error(err); }
   });
 
+  dom.approveRetryDelay.addEventListener('change', async () => {
+    // Floor 5s — Stripe approve trả `blocked` rate-limit khi tốc độ < 5s/req.
+    // Clamp client-side trước khi POST để UX rõ (input min=5, nhưng user có
+    // thể paste giá trị nhỏ hơn).
+    let val = parseInt(dom.approveRetryDelay.value, 10);
+    if (isNaN(val) || val < 5) {
+      val = 5;
+      dom.approveRetryDelay.value = '5';
+    } else if (val > 60) {
+      val = 60;
+      dom.approveRetryDelay.value = '60';
+    }
+    try {
+      await api('/api/upi/config', {
+        method: 'POST', body: JSON.stringify({ approve_retry_delay: val }),
+      });
+      state.approveRetryDelay = val;
+    } catch (err) {
+      console.error(err);
+      await Dialog.alert({ message: 'Không lưu được retry delay: ' + err.message });
+    }
+  });
+
+  dom.restartThreshold.addEventListener('change', async () => {
+    // Số `result=exception` LIÊN TIẾP để restart checkout. 0 = tắt restart.
+    let val = parseInt(dom.restartThreshold.value, 10);
+    if (isNaN(val) || val < 0) {
+      val = 0;
+      dom.restartThreshold.value = '0';
+    } else if (val > 1000) {
+      val = 1000;
+      dom.restartThreshold.value = '1000';
+    }
+    try {
+      await api('/api/upi/config', {
+        method: 'POST', body: JSON.stringify({ restart_threshold: val }),
+      });
+    } catch (err) {
+      console.error(err);
+      await Dialog.alert({ message: 'Không lưu được restart_threshold: ' + err.message });
+    }
+  });
+
+  dom.maxRestarts.addEventListener('change', async () => {
+    // Số lần restart tối đa / job. 0 = tắt restart.
+    let val = parseInt(dom.maxRestarts.value, 10);
+    if (isNaN(val) || val < 0) {
+      val = 0;
+      dom.maxRestarts.value = '0';
+    } else if (val > 2000) {
+      val = 2000;
+      dom.maxRestarts.value = '2000';
+    }
+    try {
+      await api('/api/upi/config', {
+        method: 'POST', body: JSON.stringify({ max_restarts: val }),
+      });
+    } catch (err) {
+      console.error(err);
+      await Dialog.alert({ message: 'Không lưu được max_restarts: ' + err.message });
+    }
+  });
+
   dom.jobTimeout.addEventListener('change', async () => {
     const val = parseInt(dom.jobTimeout.value, 10);
     if (isNaN(val) || val < 60) return;
@@ -1012,6 +1085,16 @@
     state.maxConcurrent = snap.max_concurrent || state.maxConcurrent;
     state.approveRetries = snap.approve_retries || state.approveRetries;
     if (snap.approve_retries) dom.approveRetries.value = snap.approve_retries;
+    if (snap.approve_retry_delay) {
+      dom.approveRetryDelay.value = snap.approve_retry_delay;
+      state.approveRetryDelay = snap.approve_retry_delay;
+    }
+    if (typeof snap.restart_threshold === 'number') {
+      dom.restartThreshold.value = snap.restart_threshold;
+    }
+    if (typeof snap.max_restarts === 'number') {
+      dom.maxRestarts.value = snap.max_restarts;
+    }
     if (snap.job_timeout) dom.jobTimeout.value = snap.job_timeout;
     if (snap.proxy_from_step) dom.proxyFromStep.value = String(snap.proxy_from_step);
 
@@ -1146,6 +1229,16 @@
 
   api('/api/upi/config').then((cfg) => {
     if (cfg.approve_retries) dom.approveRetries.value = cfg.approve_retries;
+    if (cfg.approve_retry_delay) {
+      dom.approveRetryDelay.value = cfg.approve_retry_delay;
+      state.approveRetryDelay = cfg.approve_retry_delay;
+    }
+    if (typeof cfg.restart_threshold === 'number') {
+      dom.restartThreshold.value = cfg.restart_threshold;
+    }
+    if (typeof cfg.max_restarts === 'number') {
+      dom.maxRestarts.value = cfg.max_restarts;
+    }
     if (cfg.job_timeout) dom.jobTimeout.value = cfg.job_timeout;
     if (cfg.proxy_from_step) dom.proxyFromStep.value = String(cfg.proxy_from_step);
     state.approveRetries = cfg.approve_retries;

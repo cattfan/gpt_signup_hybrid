@@ -108,14 +108,14 @@ def t04_settings_keys_whitelist() -> bool:
     _validate_type_constraint("upi.approve.restart_threshold", 0)
     _validate_type_constraint("upi.approve.restart_threshold", 1000)
     _validate_type_constraint("upi.approve.max_restarts", 0)
-    _validate_type_constraint("upi.approve.max_restarts", 100)
+    _validate_type_constraint("upi.approve.max_restarts", 2000)  # ceiling mở từ 100 lên 2000
 
     # Validate range fail
     for k, bad in [
         ("upi.approve.restart_threshold", -1),
         ("upi.approve.restart_threshold", 1001),
         ("upi.approve.max_restarts", -1),
-        ("upi.approve.max_restarts", 101),
+        ("upi.approve.max_restarts", 2001),
     ]:
         try:
             _validate_type_constraint(k, bad)
@@ -142,22 +142,23 @@ def t05_manager_setters() -> bool:
 
     mgr = UpiJobManager(max_concurrent=1)
     try:
-        # Defaults
-        assert mgr.restart_threshold == 30, mgr.restart_threshold
-        assert mgr.max_restarts == 3, mgr.max_restarts
+        # Defaults — đổi từ 30/3 sang 1/500 (mỗi exception là 1 restart, quota
+        # ≈ approve_retries → không cạn giữa job).
+        assert mgr.restart_threshold == 1, mgr.restart_threshold
+        assert mgr.max_restarts == 500, mgr.max_restarts
 
-        # Setters
+        # Setters — ceiling max_restarts đã mở từ 100 lên 2000.
         mgr.set_restart_threshold(0)
         mgr.set_restart_threshold(1000)
         mgr.set_max_restarts(0)
-        mgr.set_max_restarts(100)
+        mgr.set_max_restarts(2000)
 
         # Range fail
         for fn, bad in [
             (mgr.set_restart_threshold, -1),
             (mgr.set_restart_threshold, 1001),
             (mgr.set_max_restarts, -1),
-            (mgr.set_max_restarts, 101),
+            (mgr.set_max_restarts, 2001),
         ]:
             try:
                 fn(bad)
@@ -203,12 +204,12 @@ def t07_server_payload() -> bool:
     assert obj.restart_threshold == 30
     assert obj.max_restarts == 3
 
-    # Range fail
+    # Range fail — ceiling max_restarts mở từ 100 lên 2000 (≥ approve_retries).
     for kw in [
         {"restart_threshold": -1},
         {"restart_threshold": 1001},
         {"max_restarts": -1},
-        {"max_restarts": 101},
+        {"max_restarts": 2001},
     ]:
         try:
             SetUpiConfigRequest(**kw)

@@ -86,7 +86,7 @@ PROMO: bool = True
 PROXY_FROM_STEP: int = 3
 DO_CONFIRM: bool = True
 DO_APPROVE: bool = True
-APPROVE_DELAY: float = 3.0
+APPROVE_DELAY: float = 5.0
 APPROVE_PROXY_BATCH: int = 3
 # Số lần `result=exception http=200` LIÊN TIẾP để fatal-break approve loop.
 # Default = 0 → DISABLED: backend_exception KHÔNG bao giờ làm dừng sớm; loop
@@ -1366,6 +1366,7 @@ async def run_upi_qr_probe(
     restart_threshold: int = 0,
     max_restarts: int = 0,
     proxy_from_step: int = PROXY_FROM_STEP,
+    approve_retry_delay: float | None = None,
     auth_sink: dict[str, Any] | None = None,
 ) -> UpiQrResult:
     """Login + checkout + confirm UPI + approve loop → save QR PNG.
@@ -1410,6 +1411,17 @@ async def run_upi_qr_probe(
         raise UpiQrError(
             f"proxy_from_step phải trong [1, 6], got {proxy_from_step}"
         )
+    # Resolve approve delay — None → fallback module default (`APPROVE_DELAY`).
+    # Dưới 5s sẽ bị Stripe approve rate-limit (`blocked` http=200 lặp lại) →
+    # validate tại boundary để fail-fast nếu caller pass giá trị quá nhỏ.
+    if approve_retry_delay is None:
+        effective_approve_delay: float = float(APPROVE_DELAY)
+    else:
+        effective_approve_delay = float(approve_retry_delay)
+        if not (5.0 <= effective_approve_delay <= 60.0):
+            raise UpiQrError(
+                f"approve_retry_delay phải trong [5, 60] giây, got {approve_retry_delay}"
+            )
     # Restart logic chỉ kích hoạt khi cả 2 > 0.
     restart_enabled = restart_threshold > 0 and max_restarts > 0
 
@@ -1435,7 +1447,7 @@ async def run_upi_qr_probe(
                         f"{masked_email}  proxy_pool={len(proxy_pool)}"))
     _safe_log(_fmt_step("upi", "config", "info", _fmt_kv(
         ("approve_retries", approve_retries),
-        ("delay", f"{APPROVE_DELAY:g}s"),
+        ("delay", f"{effective_approve_delay:g}s"),
         ("batch", APPROVE_PROXY_BATCH),
         ("proxy_from_step", proxy_from_step),
         ("be_consec", APPROVE_BACKEND_EXCEPTION_CONSECUTIVE
@@ -1799,7 +1811,7 @@ async def run_upi_qr_probe(
             if restart_count == 0:
                 _safe_log(_fmt_step(
                     "6/6", "approve loop", "start",
-                    f"retries={approve_retries}  delay={APPROVE_DELAY:g}s  "
+                    f"retries={approve_retries}  delay={effective_approve_delay:g}s  "
                     f"batch={APPROVE_PROXY_BATCH}"
                     + (f"  restart={restart_threshold}/{max_restarts}"
                        if restart_enabled else ""),
@@ -1964,7 +1976,7 @@ async def run_upi_qr_probe(
                         # Reset network counter (server alive), giữ stripe.
                         consecutive_network_error = 0
                 if approve_index_total < approve_retries:
-                    await asyncio.sleep(APPROVE_DELAY)
+                    await asyncio.sleep(effective_approve_delay)
 
             approve_elapsed = monotonic() - approve_started
 

@@ -718,6 +718,12 @@ def _consume_callback(session, callback_url: str, log: Callable) -> bool:
 
     Uses allow_redirects=True so curl follows the whole chain in one call
     (connection reuse, far fewer round-trips than manual hop-by-hop).
+
+    Returns True khi response chain set được session-token cookie. NextAuth
+    có thể chunk cookie thành ``.0`` / ``.1`` khi value dài (JWT > 4KB), nên
+    check cả 3 variants thay vì chỉ tên gốc — tránh log misleading
+    ``consumed=False`` trong khi cookie đã set thật sự (bug đã quan sát:
+    `verified=True` nhưng `consumed=False` cùng response).
     """
     if not callback_url or "code=" not in callback_url:
         return False
@@ -736,8 +742,14 @@ def _consume_callback(session, callback_url: str, log: Callable) -> bool:
             timeout=30,
             allow_redirects=True,
         )
-        st = session.cookies.get("__Secure-next-auth.session-token", "")
-        return bool(st)
+        for name in (
+            "__Secure-next-auth.session-token",
+            "__Secure-next-auth.session-token.0",
+            "__Secure-next-auth.session-token.1",
+        ):
+            if session.cookies.get(name):
+                return True
+        return False
     except Exception as e:
         log(f"[request] Consume callback error: {e}")
         return False

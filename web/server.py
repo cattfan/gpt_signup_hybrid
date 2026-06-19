@@ -146,6 +146,7 @@ async def on_startup():
         "max_concurrent": um.max_concurrent,
         "job_timeout": um.job_timeout,
         "approve_retries": um.approve_retries,
+        "approve_retry_delay": um.approve_retry_delay,
         "restart_threshold": um.restart_threshold,
         "max_restarts": um.max_restarts,
         "jobs": um.list_jobs(),
@@ -1687,9 +1688,10 @@ class SetUpiConfigRequest(BaseModel):
     max_concurrent: int | None = Field(default=None, ge=1)
     job_timeout: float | None = Field(default=None, ge=60, le=7200)
     approve_retries: int | None = Field(default=None, ge=1, le=2000)
+    approve_retry_delay: float | None = Field(default=None, ge=5, le=60)
     notify_enabled: bool | None = Field(default=None)
     restart_threshold: int | None = Field(default=None, ge=0, le=1000)
-    max_restarts: int | None = Field(default=None, ge=0, le=100)
+    max_restarts: int | None = Field(default=None, ge=0, le=2000)
     proxy_from_step: int | None = Field(default=None, ge=1, le=6)
 
 
@@ -1705,6 +1707,7 @@ async def list_upi_jobs() -> JSONResponse:
         "max_concurrent": um.max_concurrent,
         "job_timeout": um.job_timeout,
         "approve_retries": um.approve_retries,
+        "approve_retry_delay": um.approve_retry_delay,
         "restart_threshold": um.restart_threshold,
         "max_restarts": um.max_restarts,
         "jobs": um.list_jobs(),
@@ -1859,6 +1862,7 @@ async def get_upi_config() -> JSONResponse:
         "max_concurrent": um.max_concurrent,
         "job_timeout": um.job_timeout,
         "approve_retries": um.approve_retries,
+        "approve_retry_delay": um.approve_retry_delay,
         "restart_threshold": um.restart_threshold,
         "max_restarts": um.max_restarts,
         "proxy_from_step": um.proxy_from_step,
@@ -1890,6 +1894,12 @@ async def set_upi_config(payload: SetUpiConfigRequest) -> JSONResponse:
         try:
             um.set_approve_retries(payload.approve_retries)
             settings_writes["upi.approve_retries"] = payload.approve_retries
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+    if payload.approve_retry_delay is not None:
+        try:
+            um.set_approve_retry_delay(payload.approve_retry_delay)
+            settings_writes["upi.approve_retry_delay"] = float(payload.approve_retry_delay)
         except ValueError as exc:
             raise HTTPException(400, str(exc))
     if payload.restart_threshold is not None:
@@ -1924,6 +1934,7 @@ async def set_upi_config(payload: SetUpiConfigRequest) -> JSONResponse:
         "max_concurrent": um.max_concurrent,
         "job_timeout": um.job_timeout,
         "approve_retries": um.approve_retries,
+        "approve_retry_delay": um.approve_retry_delay,
         "restart_threshold": um.restart_threshold,
         "max_restarts": um.max_restarts,
         "proxy_from_step": um.proxy_from_step,

@@ -70,6 +70,7 @@ _EXACT_KEYS: frozenset[str] = frozenset([
     "autoreg.concurrency", "autoreg.poll_interval",
     "autoreg.logs_url", "autoreg.api_key",
     "upi.max_concurrent", "upi.job_timeout", "upi.approve_retries",
+    "upi.approve_retry_delay",
     "upi.notify_enabled",
     "upi.approve.restart_threshold", "upi.approve.max_restarts",
     "upi.proxy_from_step",
@@ -405,6 +406,21 @@ def _validate_type_constraint(key: str, value: Any) -> None:
             )
         return
 
+    if key == "upi.approve_retry_delay":
+        # Delay (giây) giữa 2 lần retry approve. Floor 5s — Stripe approve
+        # endpoint trả `blocked` rate-limit khi tốc độ < 5s/req trên cùng IP.
+        # Cap 60s — > 60s vô nghĩa với approve loop (QR expire sau 5 phút).
+        # Float để cho phép 5.5, 7.0, 10.0, ... mà vẫn validate tight.
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            raise RepositoryError(
+                "set", TypeError(f"{key}: must be number, got {type(value).__name__}")
+            )
+        if not (5.0 <= float(value) <= 60.0):
+            raise RepositoryError(
+                "set", ValueError(f"{key}: must be in [5, 60] seconds, got {value}")
+            )
+        return
+
     if key == "upi.notify_enabled":
         if not isinstance(value, bool):
             raise RepositoryError(
@@ -429,13 +445,15 @@ def _validate_type_constraint(key: str, value: Any) -> None:
     if key == "upi.approve.max_restarts":
         # Số lần restart tối đa trong 1 job. 0 = disabled (no restart).
         # Hết quota nhưng vẫn dính exception → fatal break.
+        # Ceiling 2000 = match `upi.approve_retries` ceiling — vì khi restart
+        # mỗi exception (default), tổng restart có thể bằng total approve.
         if not isinstance(value, int) or isinstance(value, bool):
             raise RepositoryError(
                 "set", TypeError(f"{key}: must be int, got {type(value).__name__}")
             )
-        if not (0 <= value <= 100):
+        if not (0 <= value <= 2000):
             raise RepositoryError(
-                "set", ValueError(f"{key}: must be in [0, 100], got {value}")
+                "set", ValueError(f"{key}: must be in [0, 2000], got {value}")
             )
         return
 
