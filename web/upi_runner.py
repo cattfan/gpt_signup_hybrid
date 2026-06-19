@@ -73,12 +73,52 @@ _TLS_RECREATE_BACKOFF: tuple[float, ...] = (0.5, 1.0, 2.0, 3.0)
 
 
 def _safe_materialize(line: str | None) -> str | None:
-    """materialize_proxy nhưng nuốt ValueError (format rác) → None (direct)."""
+    """materialize_proxy nhưng nuốt ValueError (format rác) → None (direct).
+
+    DEPRECATED behavior — silent fallback đã gây "chập chờn ăn proxy" khi
+    line[0] có whitespace/format lỗi: trả None → flow chạy DIRECT mà user
+    không biết. Caller giờ nên dùng `_materialize_or_log_warning(line, log)`
+    để có log chẩn đoán rõ ràng. Helper cũ giữ lại cho backward-compat
+    (ngoài UPI runner).
+    """
     if not line:
         return None
     try:
         return materialize_proxy(line)
     except ValueError:
+        return None
+
+
+def _materialize_or_log_warning(line: str | None, log: "LogFn") -> str | None:
+    """Materialize 1 raw proxy line → URL concrete; KHÔNG silent direct.
+
+    Behavior:
+      - line rỗng/None/whitespace-only → return None (caller hiểu = direct).
+        KHÔNG log (tránh spam "empty proxy line" với pool có entry đệm trắng).
+      - line format lỗi → log WARNING với chi tiết format error + return None
+        (KHÔNG raise — caller `run_upi_qr_probe` quyết định fail-fast hay không
+        ở 1 chỗ duy nhất, để diagnostic + error path nhất quán).
+      - line OK → return URL concrete (đã materialize {SID} nếu có).
+
+    Lý do tách khỏi `_safe_materialize`: silent fallback là dạng "fallback
+    che lỗi" vi phạm fail-fast principle. Function này log rõ để debug
+    "tại sao flow chạy direct dù pool có entry".
+    """
+    # Coerce + strip để check empty một cách nhất quán với materialize_proxy
+    # (nó cũng strip trước parse). Whitespace-only = empty → silent return None.
+    stripped = (line or "").strip()
+    if not stripped:
+        return None
+    try:
+        return materialize_proxy(stripped)
+    except ValueError as exc:
+        # Mask để không leak credential trong log error.
+        masked = _mask_proxy(stripped)
+        log(_fmt_step(
+            "proxy", "format-error", "warn",
+            f"line {masked!r} parse fail: {exc} → SILENT DIRECT (FIX line trong "
+            "Settings tab > Proxy Pool, format đúng host:port[:user[:pass]])",
+        ))
         return None
 
 # Hardcoded knobs — fix cứng theo spec UI (không expose ra Settings).
@@ -1431,7 +1471,10 @@ async def run_upi_qr_probe(
     # Steps 2-5 dùng first_proxy = materialize raw_pool[0]. proxy_pool nay là
     # RAW templates (lazy-materialize ở approve/refresh) → first_proxy là URL
     # concrete với SID stable cho 1 job (không xoay giữa Step 2-5).
-    first_proxy = _safe_materialize(proxy_pool[0]) if proxy_pool else None
+    # KHÔNG silent direct — _materialize_or_log_warning log rõ nếu format lỗi.
+    first_proxy = (
+        _materialize_or_log_warning(proxy_pool[0], log) if proxy_pool else None
+    )
     masked_first_proxy = _mask_proxy(first_proxy)
 
     def _safe_log(msg: str) -> None:
@@ -1456,6 +1499,50 @@ async def run_upi_qr_probe(
                      if restart_enabled else "off")),
         ("variants", ",".join(CONFIRM_VARIANTS)),
     )))
+
+    # ── Proxy diagnostic ─────────────────────────────────────────────
+    # In rõ "step nào ăn proxy, step nào DIRECT" để user verify policy đang áp
+    # đúng cấu hình (debug "chập chờn ăn proxy" / "lúc thì direct lúc thì proxy").
+    # Pool có entries nhưng first_proxy=None → format[0] lỗi (đã log warning ở
+    # _materialize_or_log_warning). Fail-fast: raise UpiQrError để user fix
+    # format thay vì im lặng chạy DIRECT toàn bộ flow.
+    if proxy_pool and first_proxy is None:
+        raise UpiQrError(
+            f"proxy_pool có {len(proxy_pool)} entries nhưng first_proxy "
+            f"resolve = None — format proxy[0] không hợp lệ. Xem log "
+            f"`[proxy] format-error warn` ở trên để biết chi tiết. "
+            f"Sửa Settings tab > Proxy Pool đúng format `host:port[:user[:pass]]`."
+        )
+    _step_names = {
+        1: "login", 2: "checkout", 3: "stripe_init",
+        4: "elements", 5: "confirm", 6: "approve",
+    }
+    _proxy_steps = []
+    _direct_steps = []
+    for s in range(1, 7):
+        label = _step_names[s]
+        if first_proxy and s >= proxy_from_step:
+            _proxy_steps.append(f"{s}={label}")
+        else:
+            _direct_steps.append(f"{s}={label}")
+    _safe_log(_fmt_step("upi", "proxy policy", "info", _fmt_kv(
+        ("first_proxy", masked_first_proxy if first_proxy else "DIRECT"),
+        ("via_proxy", ",".join(_proxy_steps) if _proxy_steps else "-"),
+        ("direct", ",".join(_direct_steps) if _direct_steps else "-"),
+    )))
+
+    def _step_proxy_tag(step: int) -> str:
+        """Format 'proxy=via ***@host:port' / 'proxy=DIRECT' cho step log.
+
+        Đặt nội bộ trong scope vì depend `first_proxy` + `proxy_from_step` +
+        `masked_first_proxy` (closure). Mỗi step log gọi để hiển thị nhất quán
+        proxy đang áp ở step đó — fix UX 'chập chờn ăn proxy' cho job qua web
+        UI (production runner truyền log=_silent vào pay_upi_http nên fix log
+        format ở pay_upi_http không hiển thị; phải nhồi proxy info ở caller).
+        """
+        if first_proxy and step >= proxy_from_step:
+            return f"proxy=via {masked_first_proxy}"
+        return "proxy=DIRECT"
 
     # Lazy import → chỉ khi job thật sự chạy.
     from curl_cffi.requests import AsyncSession  # noqa: F401 — kept for type hints
@@ -1651,7 +1738,8 @@ async def run_upi_qr_probe(
             publishable_key = checkout["publishable_key"]
             _safe_log(_fmt_step(
                 f"2/6{phase_tag}", "checkout", "ok",
-                f"cs={_short(session_id, 14)}  ui={checkout.get('checkout_ui_mode') or '-'}",
+                f"cs={_short(session_id, 14)}  ui={checkout.get('checkout_ui_mode') or '-'}  "
+                f"{_step_proxy_tag(2)}",
             ))
 
             # Step 3 — Stripe init.
@@ -1677,7 +1765,8 @@ async def run_upi_qr_probe(
             amount = _extract_amount(init_data)
             _safe_log(_fmt_step(
                 f"3/6{phase_tag}", "init", "ok",
-                f"amount={amount}  ppage={_short(init_data.get('id') or '', 12)}",
+                f"amount={amount}  ppage={_short(init_data.get('id') or '', 12)}  "
+                f"{_step_proxy_tag(3)}",
             ))
             if PROMO and amount > 0:
                 _safe_log(_fmt_step("upi", "no free offer", "fail",
@@ -1717,7 +1806,8 @@ async def run_upi_qr_probe(
                 break
             _safe_log(_fmt_step(
                 f"4/6{phase_tag}", "elements", "ok",
-                f"session={_short(elements_data.get('session_id') or '', 14)}",
+                f"session={_short(elements_data.get('session_id') or '', 14)}  "
+                f"{_step_proxy_tag(4)}",
             ))
 
             # Step 5a — extract Stripe token config (best-effort, chỉ phase 1).
@@ -1761,7 +1851,10 @@ async def run_upi_qr_probe(
                 attempt["phase"] = phase_idx
                 confirm_attempts.append(attempt)
                 confirm_status = "ok" if attempt.get("ok") else "fail"
-                confirm_detail = f"variant={variant}  http={attempt.get('http_status')}"
+                confirm_detail = (
+                    f"variant={variant}  http={attempt.get('http_status')}  "
+                    f"{_step_proxy_tag(5)}"
+                )
                 err = attempt.get("error")
                 if err and isinstance(err, dict):
                     code = err.get("code") or err.get("type") or ""

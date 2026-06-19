@@ -50,6 +50,20 @@ from user_agent_profile import (
     SEC_CH_UA_PLATFORM as _SEC_CH_UA_PLATFORM,
     WINDOWS_USER_AGENT as _WINDOWS_USER_AGENT,
 )
+from web.proxy_format import mask_proxy as _mask_proxy_url
+
+
+def _proxy_log_label(proxies: dict | None) -> str:
+    """Format proxy cho log step: ``DIRECT`` hoặc ``via ***@host:port``.
+
+    Trước fix dùng chỉ ``yes/no`` → user không biết IP nào đang dùng và khi
+    nào silent fallback qua DIRECT. Show masked URL để verify trực quan.
+    """
+    if not proxies:
+        return "DIRECT"
+    # _ProxyPolicy.dict_for trả {http, https} cùng URL — lấy 1.
+    url = proxies.get("https") or proxies.get("http")
+    return f"via {_mask_proxy_url(url)}" if url else "via ?"
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -322,7 +336,7 @@ async def _create_chatgpt_checkout(
         "x-openai-target-route": "/backend-api/payments/checkout",
         "OAI-Language": "en-IN",
     }
-    log(f"  {_blue('[2/6]')} POST /backend-api/payments/checkout  {_dim('proxy=' + ('yes' if proxies else 'no'))}")
+    log(f"  {_blue('[2/6]')} POST /backend-api/payments/checkout  {_dim('proxy=' + _proxy_log_label(proxies))}")
     resp = await sess.post(
         _CHATGPT_CHECKOUT_URL, headers=headers, json=body, timeout=30, proxies=proxies,
     )
@@ -390,7 +404,7 @@ async def _stripe_init(
         "sec-ch-ua-platform": _SEC_CH_UA_PLATFORM,
         "Accept-Language": "en-IN,en;q=0.9",
     }
-    log(f"  {_blue('[3/6]')} POST /v1/payment_pages/{{cs}}/init  {_dim('proxy=' + ('yes' if proxies else 'no'))}")
+    log(f"  {_blue('[3/6]')} POST /v1/payment_pages/{{cs}}/init  {_dim('proxy=' + _proxy_log_label(proxies))}")
     resp = await sess.post(url, headers=headers, data=form, timeout=30, proxies=proxies)
     if resp.status_code != 200:
         log(f"        {_red('✗')} HTTP {resp.status_code}")
@@ -450,7 +464,7 @@ async def _stripe_elements_session(
         "sec-ch-ua-platform": _SEC_CH_UA_PLATFORM,
         "Accept-Language": "en-IN,en;q=0.9",
     }
-    log(f"  {_blue('[4/6]')} GET  /v1/elements/sessions  {_dim('proxy=' + ('yes' if proxies else 'no'))}")
+    log(f"  {_blue('[4/6]')} GET  /v1/elements/sessions  {_dim('proxy=' + _proxy_log_label(proxies))}")
     resp = await sess.get(
         _STRIPE_ELEMENTS_URL, headers=headers, params=params, timeout=30, proxies=proxies,
     )
@@ -609,7 +623,7 @@ async def _stripe_confirm_upi(
         "sec-ch-ua-platform": _SEC_CH_UA_PLATFORM,
         "Accept-Language": "en-IN,en;q=0.9",
     }
-    log(f"  {_blue('[5/6]')} POST /v1/payment_pages/{{cs}}/confirm  {_dim('proxy=' + ('yes' if proxies else 'no'))}")
+    log(f"  {_blue('[5/6]')} POST /v1/payment_pages/{{cs}}/confirm  {_dim('proxy=' + _proxy_log_label(proxies))}")
     resp = await sess.post(url, headers=headers, data=form, timeout=30, proxies=proxies)
     body_text = resp.text or ""
     try:
@@ -660,7 +674,7 @@ async def _chatgpt_approve(
         "x-openai-target-route": "/backend-api/payments/checkout/approve",
         "OAI-Language": "en-IN",
     }
-    log(f"  {_blue('[6/6]')} POST /backend-api/payments/checkout/approve  {_dim('proxy=' + ('yes' if proxies else 'no'))}")
+    log(f"  {_blue('[6/6]')} POST /backend-api/payments/checkout/approve  {_dim('proxy=' + _proxy_log_label(proxies))}")
     resp = await sess.post(_CHATGPT_APPROVE_URL, headers=headers, json=body, timeout=30, proxies=proxies)
     body_short = (resp.text or "").strip()[:120]
     if resp.status_code != 200:
