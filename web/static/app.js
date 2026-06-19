@@ -182,6 +182,7 @@
     eye: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>',
     eyeOff: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3 3 18 18"/><path d="M10.6 10.6A2 2 0 0 0 13.4 13.4"/><path d="M9.9 4.2A10.6 10.6 0 0 1 12 4c6.5 0 10 8 10 8a18.7 18.7 0 0 1-3.1 4.3"/><path d="M6.1 6.1C3.4 8 2 12 2 12s3.5 8 10 8a10.7 10.7 0 0 0 5.9-1.8"/></svg>',
     qr: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><line x1="14" y1="14" x2="14" y2="17"/><line x1="14" y1="20" x2="14" y2="21"/><line x1="17" y1="14" x2="21" y2="14"/><line x1="17" y1="17" x2="17" y2="21"/><line x1="20" y1="17" x2="21" y2="17"/><line x1="20" y1="20" x2="21" y2="20"/></svg>',
+    verify: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2 4 5v6c0 5 3.4 7.7 8 9 4.6-1.3 8-4 8-9V5l-8-3Z"/><polyline points="9 12 11 14 15 10"/></svg>',
   });
   const mailModeUiCopy = Object.freeze({
     outlook: {
@@ -228,6 +229,80 @@
 
   function icon(name) {
     return icons[name] || '';
+  }
+
+  // ── Toast (reusable, top-right) ───────────────────────────────────
+  // GptUi.toast(message, { type, duration }) — type: success|error|info|warn.
+  // Container tạo lazy 1 lần, stack dọc, auto-dismiss + click để đóng sớm.
+  // Dùng chung mọi tab: window.GptUi.toast('Đã copy', { type: 'success' }).
+  const _TOAST_ICONS = Object.freeze({
+    success: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>',
+    error: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>',
+    warn: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
+    info: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>',
+  });
+
+  let _toastContainer = null;
+  function _ensureToastContainer() {
+    if (_toastContainer && document.body.contains(_toastContainer)) return _toastContainer;
+    let el = document.getElementById('gpt-toast-container');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'gpt-toast-container';
+      el.className = 'gpt-toast-container';
+      el.setAttribute('aria-live', 'polite');
+      el.setAttribute('aria-atomic', 'false');
+      document.body.appendChild(el);
+    }
+    _toastContainer = el;
+    return el;
+  }
+
+  function toast(message, opts) {
+    opts = opts || {};
+    if (!message) return null;
+    const type = _TOAST_ICONS[opts.type] ? opts.type : 'success';
+    const duration = typeof opts.duration === 'number' ? opts.duration : 2600;
+    const container = _ensureToastContainer();
+
+    const el = document.createElement('div');
+    el.className = 'gpt-toast gpt-toast-' + type;
+    el.setAttribute('role', 'status');
+
+    const ic = document.createElement('span');
+    ic.className = 'gpt-toast-icon';
+    ic.innerHTML = _TOAST_ICONS[type];
+
+    const msg = document.createElement('span');
+    msg.className = 'gpt-toast-msg';
+    msg.textContent = message;
+
+    el.appendChild(ic);
+    el.appendChild(msg);
+    container.appendChild(el);
+
+    requestAnimationFrame(() => el.classList.add('gpt-toast-show'));
+
+    let timer = null;
+    const remove = () => {
+      if (timer) { clearTimeout(timer); timer = null; }
+      el.classList.remove('gpt-toast-show');
+      el.classList.add('gpt-toast-hide');
+      setTimeout(() => { if (el.parentNode) el.parentNode.removeChild(el); }, 240);
+    };
+    timer = setTimeout(remove, duration);
+    el.addEventListener('click', remove);
+    return el;
+  }
+
+  // Copy text + toast 1 phát (DRY cho mọi nút copy). Trả Promise.
+  function copyWithToast(text, message, opts) {
+    return copyText(text).then(() => {
+      toast(message || 'Đã copy', Object.assign({ type: 'success' }, opts || {}));
+    }).catch((err) => {
+      toast('Copy thất bại', { type: 'error' });
+      throw err;
+    });
   }
 
   function copyText(text) {
@@ -288,6 +363,8 @@
   window.GptUi = Object.assign(window.GptUi || {}, {
     icon,
     copyText,
+    toast,
+    copyWithToast,
     activateTab,
     initTabs,
     getAuthToken,

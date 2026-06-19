@@ -3556,3 +3556,92 @@ body {
     max-height: 60vh;
   }
 }
+
+/* ════════════════════════════════════════════════════════════════════
+   Toast — reusable notification (top-right). GptUi.toast(msg, {type}).
+   type: success | error | warn | info. Stack dọc, auto-dismiss + click đóng.
+   ════════════════════════════════════════════════════════════════════ */
+.gpt-toast-container {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+  max-width: min(380px, calc(100vw - 32px));
+}
+
+.gpt-toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border-strong);
+  border-left-width: 3px;
+  border-radius: var(--radius);
+  color: var(--fg);
+  font-size: 13px;
+  line-height: 1.35;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  cursor: pointer;
+  opacity: 0;
+  transform: translateX(24px);
+  transition: opacity 0.22s ease, transform 0.22s ease;
+}
+
+.gpt-toast.gpt-toast-show {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+.gpt-toast.gpt-toast-hide {
+  opacity: 0;
+  transform: translateX(24px);
+}
+
+.gpt-toast-icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+  width: 18px;
+  height: 18px;
+}
+
+.gpt-toast-icon svg {
+  width: 18px;
+  height: 18px;
+}
+
+.gpt-toast-msg {
+  flex: 1 1 auto;
+  word-break: break-word;
+}
+
+.gpt-toast-success { border-left-color: var(--green); }
+.gpt-toast-success .gpt-toast-icon { color: var(--green); }
+
+.gpt-toast-error { border-left-color: var(--red); }
+.gpt-toast-error .gpt-toast-icon { color: var(--red); }
+
+.gpt-toast-warn { border-left-color: var(--yellow); }
+.gpt-toast-warn .gpt-toast-icon { color: var(--yellow); }
+
+.gpt-toast-info { border-left-color: var(--accent); }
+.gpt-toast-info .gpt-toast-icon { color: var(--accent); }
+
+@media (max-width: 560px) {
+  .gpt-toast-container { top: 10px; right: 10px; left: 10px; max-width: none; }
+}
+
+/* Link thanh toán UPI trong modal QR — chữ trắng (không dùng màu link mặc định) */
+#upi-qr-modal-paylink {
+  color: var(--fg);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+#upi-qr-modal-paylink:hover {
+  color: var(--accent-hover);
+}

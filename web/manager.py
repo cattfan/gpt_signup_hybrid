@@ -3989,6 +3989,7 @@ class UpiJob:
     qr_source: str | None = None
     qr_reason: str | None = None
     qr_expires_at: int | None = None
+    payment_link: str | None = None
     amount: int = 0
     return_url: str | None = None
     checkout_session: str | None = None
@@ -4031,6 +4032,7 @@ class UpiJob:
             "qr_source": self.qr_source,
             "qr_reason": self.qr_reason,
             "qr_expires_at": self.qr_expires_at,
+            "payment_link": self.payment_link,
             "has_upi_uri": self.has_upi_uri,
             "has_qr_image_url": self.has_qr_image_url,
             "backend_exception_count": self.backend_exception_count,
@@ -4714,6 +4716,7 @@ class UpiJobManager:
                 qr_expires_at=job.qr_expires_at,
                 checkout_session=job.checkout_session,
                 return_url=job.return_url,
+                payment_link=job.payment_link,
                 log=lambda msg: self._job_log(job, msg),
             )
             if sent:
@@ -4801,6 +4804,7 @@ class UpiJobManager:
             job.qr_source = result.qr_source
             job.qr_reason = result.qr_reason
             job.qr_expires_at = result.qr_expires_at
+            job.payment_link = result.payment_link
             job.has_upi_uri = result.has_upi_uri
             job.has_qr_image_url = result.has_qr_image_url
             job.backend_exception_count = result.backend_exception_count

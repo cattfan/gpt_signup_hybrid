@@ -42,6 +42,42 @@ DEFAULT_SEC_CH_UA = _SEC_CH_UA
 MAX_ATTEMPTS = 500_000
 ERROR_PREFIX = "wQ8Lk5FbGpA2NcR9dShT6gYjU7VxZ4D"
 
+# Sentinel /req TLS recovery: curl_cffi/BoringSSL có thể corrupt state
+# (`curl: (35) ... OPENSSL_internal:invalid library`) khi 1 Session đổi host
+# (login dùng chatgpt.com/auth.openai.com, sentinel dùng sentinel.openai.com)
+# hoặc khi nhiều job curl_cffi chạy đồng thời. Khi gặp lỗi này, retry trên
+# Session TƯƠI (recreate clear corrupt context) — mirror `_RotatingSession`
+# trong upi_runner. Bounded để không loop vô hạn.
+_TLS_RETRY_MAX = 2
+
+
+def _is_tls_library_error(exc: BaseException) -> bool:
+    """True nếu exception là curl_cffi/BoringSSL TLS state corruption → worth
+    recreate fresh session retry."""
+    msg = str(exc).lower()
+    markers = (
+        "invalid library", "openssl_internal", "tls connect error",
+        "curl: (35)", "curl: (56)", "curl: (7)", "sslerror", "handshake",
+    )
+    return any(m in msg for m in markers)
+
+
+def _make_fresh_session(template_session):
+    """Tạo curl_cffi Session tươi (clear corrupt BoringSSL state), copy proxy
+    từ session gốc để sentinel vẫn đi qua đúng IP với login."""
+    from curl_cffi import requests as _curl_requests
+    from user_agent_profile import CURL_IMPERSONATE_PRIMARY as _IMPERSONATE
+
+    fresh = _curl_requests.Session(impersonate=_IMPERSONATE)
+    fresh.trust_env = False
+    try:
+        proxies = getattr(template_session, "proxies", None)
+        if proxies:
+            fresh.proxies = dict(proxies)
+    except Exception:  # noqa: BLE001 — proxy copy best-effort
+        pass
+    return fresh
+
 
 def _fnv1a_32(text: str) -> str:
     h = 2166136261
@@ -146,8 +182,53 @@ def _fetch_challenge(session, device_id: str, flow: str, request_p: str) -> dict
         if resp.status_code == 200:
             return resp.json()
         logger.warning("Sentinel /req HTTP %s", resp.status_code)
+        return None
     except Exception as e:
-        logger.warning("Sentinel /req error: %s", e)
+        # TLS-library corruption → recreate fresh session + retry bounded.
+        # Lỗi khác (network thật, JSON parse) → giữ behavior cũ (return None).
+        if not _is_tls_library_error(e):
+            logger.warning("Sentinel /req error: %s", e)
+            return None
+        logger.warning(
+            "Sentinel /req TLS-library error → retry trên fresh session: %s", e
+        )
+
+    payload = json.dumps(body, separators=(",", ":"))
+    for attempt in range(1, _TLS_RETRY_MAX + 1):
+        fresh = _make_fresh_session(session)
+        try:
+            resp = fresh.post(
+                SENTINEL_REQ_URL,
+                data=payload,
+                headers=headers,
+                timeout=20,
+            )
+            if resp.status_code == 200:
+                logger.info(
+                    "Sentinel /req OK trên fresh session (retry %d/%d)",
+                    attempt, _TLS_RETRY_MAX,
+                )
+                return resp.json()
+            logger.warning(
+                "Sentinel /req HTTP %s (fresh retry %d/%d)",
+                resp.status_code, attempt, _TLS_RETRY_MAX,
+            )
+            return None
+        except Exception as e:  # noqa: BLE001
+            if not _is_tls_library_error(e) or attempt >= _TLS_RETRY_MAX:
+                logger.warning(
+                    "Sentinel /req error sau %d fresh retry: %s", attempt, e
+                )
+                return None
+            logger.warning(
+                "Sentinel /req TLS-library error (fresh retry %d/%d) → recreate: %s",
+                attempt, _TLS_RETRY_MAX, e,
+            )
+        finally:
+            try:
+                fresh.close()
+            except Exception:  # noqa: BLE001
+                pass
     return None
 
 

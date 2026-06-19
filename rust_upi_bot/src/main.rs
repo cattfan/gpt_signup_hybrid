@@ -30,7 +30,7 @@ use crate::bot::limiter::{AdmitDecision, MessageDecision, UserLimiter};
 use crate::bot::queue::{spawn_workers, Job, JobEvent, JobQueue, SubmitError, WorkerConfig};
 use crate::bot::registry::JobRegistry;
 use crate::bot::session_buffer::{AppendResult, SessionBuffer};
-use crate::bot::telegram::{CallbackQuery, Message, TelegramClient, Update};
+use crate::bot::telegram::{CallbackQuery, Message, TelegramClient};
 use crate::http::HttpClient;
 use crate::upi::runner::UpiJobConfig;
 use crate::upi::types::UpiQrResult;
@@ -184,9 +184,11 @@ async fn main() -> Result<()> {
         std::fs::create_dir_all(p).ok();
     }
 
-    // Open Settings Store
-    let _settings = settings::Settings::open(&cli.db_path)
-        .context("không mở được SQLite settings store")?;
+    // Open Settings Store — giữ sống suốt runtime: chứa settings + danh sách
+    // user kết nối (broadcast) + danh sách ban (theo user_id).
+    let store = Arc::new(
+        settings::Settings::open(&cli.db_path).context("không mở được SQLite settings store")?,
+    );
     info!("settings store opened: {}", cli.db_path.display());
 
     let client = HttpClient::new(cli.http_timeout)?;
@@ -255,7 +257,7 @@ async fn main() -> Result<()> {
         });
     }
 
-    // Set bot commands menu
+    // Set bot commands menu (mặc định cho mọi user)
     let bot_commands: &[(&str, &str)] = &[
         ("start", "Open menu"),
         ("status", "Bot status"),
@@ -265,6 +267,27 @@ async fn main() -> Result<()> {
     ];
     if let Err(e) = tg.set_my_commands(bot_commands).await {
         warn!("setMyCommands warn: {}", e);
+    }
+
+    // Menu lệnh admin (scope theo chat admin) — chỉ admin thấy /notify, /ban...
+    if cli.admin_chat_id != 0 {
+        let admin_commands: &[(&str, &str)] = &[
+            ("start", "Open menu"),
+            ("status", "Bot status"),
+            ("stop", "Cancel my running jobs"),
+            ("cancel", "Clear pending text buffer"),
+            ("help", "Show help"),
+            ("notify", "Broadcast tới mọi user (admin)"),
+            ("ban", "Ban user theo @username/id (admin)"),
+            ("unban", "Gỡ ban theo @username/id (admin)"),
+            ("banlist", "Danh sách user bị ban (admin)"),
+        ];
+        if let Err(e) = tg
+            .set_my_commands_for_chat(cli.admin_chat_id, admin_commands)
+            .await
+        {
+            warn!("setMyCommands(admin) warn: {}", e);
+        }
     }
 
     info!("bot ready, polling Telegram getUpdates...");
@@ -280,6 +303,7 @@ async fn main() -> Result<()> {
                         let limiter = limiter.clone();
                         let session_buffer = session_buffer.clone();
                         let registry = registry.clone();
+                        let store = store.clone();
                         let allowed = allowed_users.clone();
                         let proxy_pool = proxy_pool.clone();
                         let cli = cli.clone();
@@ -290,6 +314,7 @@ async fn main() -> Result<()> {
                                 limiter,
                                 session_buffer,
                                 registry,
+                                store,
                                 msg,
                                 &allowed,
                                 &proxy_pool,
@@ -304,10 +329,20 @@ async fn main() -> Result<()> {
                         let tg = tg.clone();
                         let registry = registry.clone();
                         let session_buffer = session_buffer.clone();
+                        let store = store.clone();
                         let allowed = allowed_users.clone();
+                        let admin_chat_id = cli.admin_chat_id;
                         tokio::spawn(async move {
-                            if let Err(e) =
-                                handle_callback(tg, registry, session_buffer, cb, &allowed).await
+                            if let Err(e) = handle_callback(
+                                tg,
+                                registry,
+                                session_buffer,
+                                store,
+                                cb,
+                                &allowed,
+                                admin_chat_id,
+                            )
+                            .await
                             {
                                 error!("handle_callback error: {}", e);
                             }
@@ -329,6 +364,7 @@ async fn handle_message(
     limiter: UserLimiter,
     session_buffer: Arc<tokio::sync::Mutex<SessionBuffer>>,
     registry: JobRegistry,
+    store: Arc<settings::Settings>,
     msg: Message,
     allowed: &HashSet<i64>,
     proxy_pool: &[String],
@@ -336,6 +372,22 @@ async fn handle_message(
 ) -> Result<()> {
     let user_id = msg.from.as_ref().map(|u| u.id).unwrap_or(0);
     let username = msg.from.as_ref().and_then(|u| u.username.clone());
+    let first_name = msg.from.as_ref().and_then(|u| u.first_name.clone());
+
+    // Ghi nhận user kết nối (nguồn danh sách broadcast). Username có thể đổi —
+    // lưu theo user_id bền vững. Bỏ qua message không có sender (channel, ...).
+    if user_id != 0 {
+        if let Err(e) = store.record_user(
+            user_id,
+            username.as_deref(),
+            first_name.as_deref(),
+            msg.chat.id,
+        ) {
+            tracing::warn!(user_id, "record_user fail: {}", e);
+        }
+    }
+
+    let is_admin = cli.admin_chat_id != 0 && user_id == cli.admin_chat_id;
 
     // Anti-flood: register message → drop nếu vượt rate.
     // SKIP nếu user đang có buffer pending (chunks tiếp theo của paste dài,
@@ -353,6 +405,24 @@ async fn handle_message(
                 );
                 return Ok(());
             }
+        }
+    }
+
+    // Ban check — banned user (theo user_id) bị chặn hoàn toàn. Admin miễn nhiễm.
+    if !is_admin {
+        match store.is_banned(user_id) {
+            Ok(true) => {
+                tg.send_message(
+                    msg.chat.id,
+                    "⛔ Bạn đã bị admin chặn khỏi bot.",
+                    Some(msg.message_id),
+                )
+                .await
+                .ok();
+                return Ok(());
+            }
+            Ok(false) => {}
+            Err(e) => tracing::warn!(user_id, "is_banned check fail: {}", e),
         }
     }
 
@@ -407,6 +477,42 @@ async fn handle_message(
                 .ok();
             return Ok(());
         }
+
+        // ── Admin commands ────────────────────────────────────────────────
+        // Match chính xác token lệnh (strip @botname) để /ban không nuốt /banlist.
+        let cmd_base = trimmed
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .split('@')
+            .next()
+            .unwrap_or("");
+        match cmd_base {
+            "/notify" | "/ban" | "/unban" | "/banlist" => {
+                if !is_admin {
+                    tg.send_message(
+                        msg.chat.id,
+                        "⛔ Lệnh chỉ dành cho admin.",
+                        Some(msg.message_id),
+                    )
+                    .await
+                    .ok();
+                    return Ok(());
+                }
+                match cmd_base {
+                    "/notify" => handle_notify(&tg, &store, &msg, text).await,
+                    "/ban" => {
+                        handle_ban(&tg, &store, &registry, &msg, text, cli.admin_chat_id).await
+                    }
+                    "/unban" => handle_unban(&tg, &store, &msg, text).await,
+                    "/banlist" => handle_banlist(&tg, &store, &msg).await,
+                    _ => unreachable!(),
+                }
+                return Ok(());
+            }
+            _ => {}
+        }
+
         if trimmed.starts_with('/') {
             return Ok(());
         }
@@ -1017,10 +1123,23 @@ async fn handle_callback(
     tg: Arc<TelegramClient>,
     registry: JobRegistry,
     session_buffer: Arc<tokio::sync::Mutex<SessionBuffer>>,
+    store: Arc<settings::Settings>,
     cb: CallbackQuery,
     allowed: &HashSet<i64>,
+    admin_chat_id: i64,
 ) -> Result<()> {
     let user_id = cb.from.id;
+    let is_admin = admin_chat_id != 0 && user_id == admin_chat_id;
+
+    if !is_admin {
+        if let Ok(true) = store.is_banned(user_id) {
+            tg.answer_callback_query(&cb.id, Some("Bạn đã bị chặn"))
+                .await
+                .ok();
+            return Ok(());
+        }
+    }
+
     if !allowed.is_empty() && !allowed.contains(&user_id) {
         tg.answer_callback_query(&cb.id, Some("Not whitelisted"))
             .await
@@ -1058,14 +1177,25 @@ async fn handle_callback(
         }
         "cmd:help" => {
             tg.answer_callback_query(&cb.id, None).await.ok();
-            let help = "Commands:\n\
+            let mut help = String::from(
+                "Commands:\n\
                 /start — open menu\n\
                 /status — bot status\n\
                 /stop — cancel YOUR running jobs\n\
                 /cancel — clear pending text buffer\n\
-                /help — this message\n\n\
-                Send a session.json file or paste JSON text to start.";
-            tg.send_message(chat_id, help, None).await.ok();
+                /help — this message\n",
+            );
+            if is_admin {
+                help.push_str(
+                    "\nAdmin:\n\
+                    /notify <nội dung> — broadcast tới mọi user (giữ xuống dòng + format)\n\
+                    /ban <@username | id> [lý do] — ban theo user_id\n\
+                    /unban <@username | id> — gỡ ban\n\
+                    /banlist — danh sách user bị ban\n",
+                );
+            }
+            help.push_str("\nSend a session.json file or paste JSON text to start.");
+            tg.send_message(chat_id, &help, None).await.ok();
         }
         _ => {
             tg.answer_callback_query(&cb.id, Some("Unknown action"))
@@ -1074,4 +1204,358 @@ async fn handle_callback(
         }
     }
     Ok(())
+}
+
+// ── Admin command helpers ──────────────────────────────────────────────
+
+/// Tách phần nội dung sau token lệnh. Trả `(body, body_start_byte)` với `body`
+/// đã trim khoảng trắng 2 đầu. None nếu lệnh không có nội dung.
+/// `body_start_byte` = vị trí byte trong `text` nơi body bắt đầu (trước trim
+/// phải) — dùng để tính offset entity cần dịch.
+fn command_body(text: &str) -> Option<(&str, usize)> {
+    let ws = text.char_indices().find(|(_, c)| c.is_whitespace())?.0;
+    let rest = &text[ws..];
+    let body_rel = rest.char_indices().find(|(_, c)| !c.is_whitespace())?.0;
+    let start = ws + body_rel;
+    let body = text[start..].trim_end();
+    if body.is_empty() {
+        return None;
+    }
+    Some((body, start))
+}
+
+/// Dịch entities của message admin về body sau khi cắt prefix lệnh. Offset/length
+/// theo UTF-16 code unit (chuẩn Telegram). Entity nằm hẳn trong prefix bị bỏ;
+/// entity vắt qua ranh giới bị clip cho khớp body.
+fn shift_entities(entities: &[Value], prefix_utf16: usize, body_utf16: usize) -> Vec<Value> {
+    let p = prefix_utf16 as i64;
+    let blen = body_utf16 as i64;
+    let mut out = Vec::new();
+    for e in entities {
+        let off = e.get("offset").and_then(|v| v.as_i64()).unwrap_or(0);
+        let len = e.get("length").and_then(|v| v.as_i64()).unwrap_or(0);
+        let nstart = (off - p).max(0);
+        let nend = (off + len - p).min(blen);
+        if nend <= nstart {
+            continue;
+        }
+        let mut ne = e.clone();
+        if let Some(obj) = ne.as_object_mut() {
+            obj.insert("offset".into(), serde_json::json!(nstart));
+            obj.insert("length".into(), serde_json::json!(nend - nstart));
+        }
+        out.push(ne);
+    }
+    out
+}
+
+/// `/notify <nội dung>` — broadcast tới mọi user (trừ user bị ban), giữ nguyên
+/// xuống dòng + format chữ admin đã gõ. Prune user đã block bot.
+async fn handle_notify(
+    tg: &Arc<TelegramClient>,
+    store: &Arc<settings::Settings>,
+    msg: &Message,
+    text: &str,
+) {
+    let Some((body, body_start)) = command_body(text) else {
+        tg.send_message(
+            msg.chat.id,
+            "Usage: /notify <nội dung>\n(Hỗ trợ xuống dòng + format chữ.)",
+            Some(msg.message_id),
+        )
+        .await
+        .ok();
+        return;
+    };
+
+    let prefix_utf16 = text[..body_start].encode_utf16().count();
+    let body_utf16 = body.encode_utf16().count();
+    let entities: Vec<Value> = msg
+        .entities
+        .as_ref()
+        .map(|es| shift_entities(es, prefix_utf16, body_utf16))
+        .unwrap_or_default();
+
+    let targets = match store.broadcast_targets() {
+        Ok(t) => t,
+        Err(e) => {
+            tg.send_message(
+                msg.chat.id,
+                &format!("❌ Không đọc được danh sách user: {}", e),
+                Some(msg.message_id),
+            )
+            .await
+            .ok();
+            return;
+        }
+    };
+
+    let total = targets.len();
+    let status_id = tg
+        .send_message(
+            msg.chat.id,
+            &format!("📢 Đang broadcast tới {} user...", total),
+            Some(msg.message_id),
+        )
+        .await
+        .unwrap_or(0);
+
+    let mut ok = 0usize;
+    let mut fail = 0usize;
+    let mut pruned = 0usize;
+    for (uid, chat_id) in targets {
+        let ents = if entities.is_empty() {
+            None
+        } else {
+            Some(entities.clone())
+        };
+        match tg.send_message_entities(chat_id, body, ents).await {
+            Ok(_) => ok += 1,
+            Err(e) => {
+                fail += 1;
+                let s = e.to_string().to_lowercase();
+                if s.contains("bot was blocked")
+                    || s.contains("user is deactivated")
+                    || s.contains("chat not found")
+                {
+                    if let Err(e2) = store.remove_user(uid) {
+                        tracing::warn!(uid, "prune user fail: {}", e2);
+                    } else {
+                        pruned += 1;
+                    }
+                }
+            }
+        }
+        // Tôn trọng giới hạn ~30 msg/s của Telegram broadcast.
+        tokio::time::sleep(Duration::from_millis(40)).await;
+    }
+
+    let summary = format!(
+        "✅ Broadcast xong\nGửi OK: {}\nLỗi: {}\nGỡ user đã block bot: {}",
+        ok, fail, pruned
+    );
+    if status_id != 0 {
+        tg.edit_message_text(msg.chat.id, status_id, &summary)
+            .await
+            .ok();
+    } else {
+        tg.send_message(msg.chat.id, &summary, None).await.ok();
+    }
+}
+
+/// `/ban <@username | id> [lý do]` — resolve về user_id rồi lưu ban theo user_id
+/// (đổi username vẫn dính ban). Cũng stop mọi job đang chạy của user đó.
+async fn handle_ban(
+    tg: &Arc<TelegramClient>,
+    store: &Arc<settings::Settings>,
+    registry: &JobRegistry,
+    msg: &Message,
+    text: &str,
+    admin_id: i64,
+) {
+    let Some((arg, _)) = command_body(text) else {
+        tg.send_message(
+            msg.chat.id,
+            "Usage: /ban <@username | id> [lý do]\nVD: /ban @vipproor  ·  /ban 2314324",
+            Some(msg.message_id),
+        )
+        .await
+        .ok();
+        return;
+    };
+    let token = arg.split_whitespace().next().unwrap_or("");
+    let reason = arg[token.len()..].trim();
+    let reason_opt = if reason.is_empty() { None } else { Some(reason) };
+
+    // Token toàn chữ số (có/không '@') → coi là user_id; còn lại → username.
+    let stripped = token.trim_start_matches('@');
+    let (target_id, uname): (i64, Option<String>) = match stripped.parse::<i64>() {
+        Ok(id) => (id, store.known_username(id).ok().flatten()),
+        Err(_) => match store.resolve_username(stripped) {
+            Ok(Some(id)) => (id, Some(stripped.to_string())),
+            Ok(None) => {
+                tg.send_message(
+                    msg.chat.id,
+                    &format!(
+                        "❌ Chưa thấy @{} kết nối bot — không resolve được user_id.\n\
+                         Ban bằng số id nếu bạn biết: /ban <id> [lý do]",
+                        stripped
+                    ),
+                    Some(msg.message_id),
+                )
+                .await
+                .ok();
+                return;
+            }
+            Err(e) => {
+                tg.send_message(
+                    msg.chat.id,
+                    &format!("❌ Lỗi resolve username: {}", e),
+                    Some(msg.message_id),
+                )
+                .await
+                .ok();
+                return;
+            }
+        },
+    };
+
+    if target_id == admin_id {
+        tg.send_message(msg.chat.id, "⚠️ Không thể ban admin.", Some(msg.message_id))
+            .await
+            .ok();
+        return;
+    }
+
+    match store.ban(target_id, uname.as_deref(), reason_opt, admin_id) {
+        Ok(_) => {
+            let stopped = registry.stop_user(target_id).await;
+            let uname_disp = uname
+                .as_deref()
+                .map(|u| format!(" (@{})", u))
+                .unwrap_or_default();
+            let reason_disp = reason_opt
+                .map(|r| format!("\nLý do: {}", r))
+                .unwrap_or_default();
+            tg.send_message(
+                msg.chat.id,
+                &format!(
+                    "🚫 Đã ban user_id {}{}{}\nĐã stop {} job đang chạy của user.",
+                    target_id, uname_disp, reason_disp, stopped
+                ),
+                Some(msg.message_id),
+            )
+            .await
+            .ok();
+        }
+        Err(e) => {
+            tg.send_message(
+                msg.chat.id,
+                &format!("❌ Ban thất bại: {}", e),
+                Some(msg.message_id),
+            )
+            .await
+            .ok();
+        }
+    }
+}
+
+/// `/unban <@username | id>` — gỡ ban. Resolve username qua bot_users, fallback
+/// sang username lưu trong chính bảng ban (phòng user đã rời/đổi tên).
+async fn handle_unban(
+    tg: &Arc<TelegramClient>,
+    store: &Arc<settings::Settings>,
+    msg: &Message,
+    text: &str,
+) {
+    let Some((arg, _)) = command_body(text) else {
+        tg.send_message(
+            msg.chat.id,
+            "Usage: /unban <@username | id>",
+            Some(msg.message_id),
+        )
+        .await
+        .ok();
+        return;
+    };
+    let token = arg.split_whitespace().next().unwrap_or("");
+    let stripped = token.trim_start_matches('@');
+
+    let target_id: Option<i64> = match stripped.parse::<i64>() {
+        Ok(id) => Some(id),
+        Err(_) => match store.resolve_username(stripped) {
+            Ok(Some(id)) => Some(id),
+            Ok(None) => store.banned_user_id_by_username(stripped).ok().flatten(),
+            Err(_) => store.banned_user_id_by_username(stripped).ok().flatten(),
+        },
+    };
+
+    let Some(target_id) = target_id else {
+        tg.send_message(
+            msg.chat.id,
+            &format!("❌ Không tìm thấy user_id cho '{}'.", token),
+            Some(msg.message_id),
+        )
+        .await
+        .ok();
+        return;
+    };
+
+    match store.unban(target_id) {
+        Ok(true) => {
+            tg.send_message(
+                msg.chat.id,
+                &format!("✅ Đã gỡ ban user_id {}.", target_id),
+                Some(msg.message_id),
+            )
+            .await
+            .ok();
+        }
+        Ok(false) => {
+            tg.send_message(
+                msg.chat.id,
+                &format!("ℹ️ user_id {} không nằm trong ban list.", target_id),
+                Some(msg.message_id),
+            )
+            .await
+            .ok();
+        }
+        Err(e) => {
+            tg.send_message(
+                msg.chat.id,
+                &format!("❌ Unban thất bại: {}", e),
+                Some(msg.message_id),
+            )
+            .await
+            .ok();
+        }
+    }
+}
+
+/// `/banlist` — liệt kê user bị ban (mới nhất trước).
+async fn handle_banlist(
+    tg: &Arc<TelegramClient>,
+    store: &Arc<settings::Settings>,
+    msg: &Message,
+) {
+    let bans = match store.list_bans() {
+        Ok(b) => b,
+        Err(e) => {
+            tg.send_message(
+                msg.chat.id,
+                &format!("❌ Không đọc được ban list: {}", e),
+                Some(msg.message_id),
+            )
+            .await
+            .ok();
+            return;
+        }
+    };
+    if bans.is_empty() {
+        tg.send_message(msg.chat.id, "✅ Không có user nào bị ban.", Some(msg.message_id))
+            .await
+            .ok();
+        return;
+    }
+    let mut body = format!("🚫 Banned users ({}):\n", bans.len());
+    for b in &bans {
+        let uname = b
+            .username
+            .as_deref()
+            .map(|u| format!(" @{}", u))
+            .unwrap_or_default();
+        let reason = b
+            .reason
+            .as_deref()
+            .map(|r| format!(" — {}", r))
+            .unwrap_or_default();
+        body.push_str(&format!("• {}{}{}\n", b.user_id, uname, reason));
+    }
+    if body.len() > 3800 {
+        body.truncate(3800);
+        body.push('…');
+    }
+    tg.send_message(msg.chat.id, &body, Some(msg.message_id))
+        .await
+        .ok();
 }

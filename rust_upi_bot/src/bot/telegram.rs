@@ -44,6 +44,9 @@ pub struct Message {
     pub text: Option<String>,
     pub document: Option<Document>,
     pub caption: Option<String>,
+    /// Telegram message entities (bold/italic/link/...). Offset/length tính
+    /// theo UTF-16 code unit. Giữ raw `Value` để re-send nguyên format.
+    pub entities: Option<Vec<Value>>,
     pub date: i64,
 }
 
@@ -127,6 +130,34 @@ impl TelegramClient {
         Ok(())
     }
 
+    /// Đăng ký bot commands cho riêng 1 chat (scope=chat) — dùng để hiện
+    /// nhóm lệnh admin (`/notify`, `/ban`, ...) chỉ trong chat của admin,
+    /// không lộ ra menu của user thường.
+    pub async fn set_my_commands_for_chat(
+        &self,
+        chat_id: i64,
+        commands: &[(&str, &str)],
+    ) -> Result<()> {
+        let url = format!("{}/setMyCommands", self.base_url);
+        let cmds: Vec<Value> = commands
+            .iter()
+            .map(|(c, d)| json!({"command": *c, "description": *d}))
+            .collect();
+        let body = json!({
+            "commands": cmds,
+            "scope": { "type": "chat", "chat_id": chat_id },
+        });
+        let resp = self.http.post(&url).json(&body).send().await?;
+        let v: Value = resp.json().await?;
+        if v.get("ok").and_then(|b| b.as_bool()) != Some(true) {
+            return Err(anyhow!(
+                "setMyCommands(chat) fail: {}",
+                v.get("description").and_then(|s| s.as_str()).unwrap_or("?")
+            ));
+        }
+        Ok(())
+    }
+
     /// Trả lời callback query (đóng spinner trên client). `text` optional —
     /// nếu set sẽ hiện toast nhỏ.
     pub async fn answer_callback_query(
@@ -190,6 +221,37 @@ impl TelegramClient {
         }
         if let Some(kb) = reply_markup {
             body["reply_markup"] = json!({ "inline_keyboard": kb });
+        }
+        let resp = self.http.post(&url).json(&body).send().await?;
+        let v: Value = resp.json().await?;
+        if v.get("ok").and_then(|b| b.as_bool()) != Some(true) {
+            return Err(anyhow!(
+                "sendMessage fail: {}",
+                v.get("description").and_then(|s| s.as_str()).unwrap_or("?")
+            ));
+        }
+        Ok(v["result"]["message_id"].as_i64().unwrap_or(0))
+    }
+
+    /// Gửi message kèm `entities` thô (giữ nguyên format admin đã gõ:
+    /// bold/italic/link/xuống dòng...). Khác `send_message_kb` ở chỗ KHÔNG
+    /// dùng parse_mode — Telegram render trực tiếp theo entities.
+    pub async fn send_message_entities(
+        &self,
+        chat_id: i64,
+        text: &str,
+        entities: Option<Vec<Value>>,
+    ) -> Result<i64> {
+        let url = format!("{}/sendMessage", self.base_url);
+        let mut body = json!({
+            "chat_id": chat_id,
+            "text": text,
+            "disable_web_page_preview": true,
+        });
+        if let Some(ents) = entities {
+            if !ents.is_empty() {
+                body["entities"] = Value::Array(ents);
+            }
         }
         let resp = self.http.post(&url).json(&body).send().await?;
         let v: Value = resp.json().await?;

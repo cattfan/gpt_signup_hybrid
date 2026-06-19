@@ -181,6 +181,7 @@ class UpiQrResult:
     qr_source_url: str | None = None
     qr_reason: str | None = None     # nếu không có QR
     qr_expires_at: int | None = None  # unix seconds — QR hết hạn lúc này (None nếu không rõ)
+    payment_link: str | None = None  # hosted_instructions_url (payments.stripe.com/upi/instructions/...)
     has_upi_uri: bool = False
     has_qr_image_url: bool = False
     confirm_attempts: list[dict[str, Any]] = field(default_factory=list)
@@ -210,6 +211,7 @@ class UpiQrResult:
             "qr_source_url": self.qr_source_url,
             "qr_reason": self.qr_reason,
             "qr_expires_at": self.qr_expires_at,
+            "payment_link": self.payment_link,
             "has_upi_uri": self.has_upi_uri,
             "has_qr_image_url": self.has_qr_image_url,
             "confirm_attempts": self.confirm_attempts,
@@ -379,6 +381,42 @@ def _find_qr_expires_at(matches: list[dict[str, Any]]) -> int | None:
             and ("image_url_png" in value or "image_url_svg" in value)
         ):
             return expires_at
+    return None
+
+
+def _find_hosted_instructions_url(matches: list[dict[str, Any]]) -> str | None:
+    """Tìm `hosted_instructions_url` của UPI (payments.stripe.com/upi/instructions/...).
+
+    Stripe trả nó trong ``next_action.upi_handle_redirect_or_display_qr_code.
+    hosted_instructions_url`` — là trang hướng dẫn thanh toán UPI hosted (mở ra
+    hiện QR + nút mở app UPI). Đây là "payment link" đúng dạng user cần.
+
+    ``_find_matches`` bắt được nó 2 cách:
+      1. Key ``hosted_instructions_url`` (match term "hosted_instructions") →
+         value = URL string trực tiếp.
+      2. Key ``next_action`` (match term "next_action") → value = cả dict, đào
+         nested ``upi_handle_redirect_or_display_qr_code.hosted_instructions_url``.
+    Ưu tiên (1); fallback (2) để chắc ăn nếu shape đổi.
+    """
+    _PREFIX = "https://payments.stripe.com/upi/instructions/"
+    # (1) direct string value.
+    for match in matches:
+        value = match.get("value")
+        if isinstance(value, str) and value.startswith(_PREFIX):
+            return value
+    # (2) nested trong dict value (vd next_action / qr block).
+    for match in matches:
+        value = match.get("value")
+        if not isinstance(value, dict):
+            continue
+        block = value.get("upi_handle_redirect_or_display_qr_code")
+        if isinstance(block, dict):
+            url = block.get("hosted_instructions_url")
+            if isinstance(url, str) and url.startswith(_PREFIX):
+                return url
+        url = value.get("hosted_instructions_url")
+        if isinstance(url, str) and url.startswith(_PREFIX):
+            return url
     return None
 
 
@@ -1672,6 +1710,7 @@ async def run_upi_qr_probe(
     qr_image_url: str | None = None
     upi_uri: str | None = None
     qr_expires_at: int | None = None
+    payment_link: str | None = None
 
     # ─────────────────────────────────────────────────────────────────
     # Step 2-6 — bọc trong restart loop. Mỗi "phase" tạo 1 checkout session
@@ -2138,6 +2177,7 @@ async def run_upi_qr_probe(
         upi_uri = _find_upi_uri(matches)
         qr_image_url = _find_qr_image_url(matches)
         qr_expires_at = _find_qr_expires_at(matches)
+        payment_link = _find_hosted_instructions_url(matches)
 
         # QR rendering (download Stripe image hoặc render từ upi:// URI).
         qr_path: str | None = None
@@ -2188,6 +2228,9 @@ async def run_upi_qr_probe(
         else:
             _safe_log(_fmt_step("qr", "saved", "fail", qr_reason or "unknown"))
 
+        if payment_link:
+            _safe_log(_fmt_step("upi", "pay link", "ok", payment_link))
+
     elapsed = monotonic() - started
 
     # Determine success: cần CẢ approve approved + qr file rendered.
@@ -2225,6 +2268,7 @@ async def run_upi_qr_probe(
         qr_source_url=qr_image_url,
         qr_reason=qr_reason,
         qr_expires_at=qr_expires_at,
+        payment_link=payment_link,
         has_upi_uri=bool(upi_uri),
         has_qr_image_url=bool(qr_image_url),
         confirm_attempts=_summarize_confirm(confirm_attempts),

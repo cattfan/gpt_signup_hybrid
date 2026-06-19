@@ -189,6 +189,7 @@ class TelegramNotifier:
         qr_expires_at: int | None,
         checkout_session: str | None = None,
         return_url: str | None = None,
+        payment_link: str | None = None,
         log: LogFn | None = None,
     ) -> bool:
         """Gửi QR (caption gồm email masked + thời điểm hết hạn). Combo reply
@@ -220,11 +221,18 @@ class TelegramNotifier:
         is_svg = path.suffix.lower() == ".svg"
         # Caption gọn: tiêu đề + email masked + 2 dòng hết hạn (VN/IN). Bỏ
         # amount/checkout — combo đầy đủ ở tin reply (code block tap-to-copy).
-        caption = "\n".join([
+        caption_lines = [
             "🟢 <b>UPI QR — ChatGPT Plus (IN)</b>",
             f"Email: {html.escape(_mask_email(email))}",
             _fmt_expiry(qr_expires_at),
-        ])
+        ]
+        # Link thanh toán hosted (payments.stripe.com/upi/instructions/...) —
+        # mở ra trang QR + nút mở app UPI. Hữu ích khi user trả bằng điện thoại.
+        if payment_link:
+            caption_lines.append(
+                f'💳 <a href="{html.escape(payment_link, quote=True)}">Link thanh toán UPI</a>'
+            )
+        caption = "\n".join(caption_lines)
 
         # ─── DISABLED: combo reply ─────────────────────────────────────────
         # Hiện tại không gửi tin reply chứa `email|password|secret` (spam channel

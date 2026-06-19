@@ -36,6 +36,36 @@ SENTINEL_VERSION = "20260219f9f6"
 SENTINEL_SDK_URL = f"https://sentinel.openai.com/sentinel/{SENTINEL_VERSION}/sdk.js"
 SENTINEL_REQ_URL = "https://sentinel.openai.com/backend-api/sentinel/req"
 
+# TLS-library recovery (mirror sentinel_pow): curl_cffi/BoringSSL có thể corrupt
+# state khi đổi host (login → sentinel.openai.com) hoặc chạy concurrent. Retry
+# trên Session tươi thay vì raise → fallback PoW (vốn cũng dùng session corrupt).
+_TLS_RETRY_MAX = 2
+
+
+def _is_tls_library_error(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    markers = (
+        "invalid library", "openssl_internal", "tls connect error",
+        "curl: (35)", "curl: (56)", "curl: (7)", "sslerror", "handshake",
+    )
+    return any(m in msg for m in markers)
+
+
+def _make_fresh_session(template_session: Any) -> Any:
+    """Session curl_cffi tươi (clear corrupt BoringSSL), copy proxy từ session gốc."""
+    from curl_cffi import requests as _curl_requests
+    from user_agent_profile import CURL_IMPERSONATE_PRIMARY as _IMPERSONATE
+
+    fresh = _curl_requests.Session(impersonate=_IMPERSONATE)
+    fresh.trust_env = False
+    try:
+        proxies = getattr(template_session, "proxies", None)
+        if proxies:
+            fresh.proxies = dict(proxies)
+    except Exception:  # noqa: BLE001
+        pass
+    return fresh
+
 
 def _resolve_node_binary() -> str:
     return (os.getenv("OPENAI_SENTINEL_NODE_PATH", "") or "").strip() or "node"
@@ -365,29 +395,48 @@ def _fetch_sentinel_challenge(
     )
 
     body = {"p": request_p, "id": device_id, "flow": flow}
-    resp = session.post(
-        SENTINEL_REQ_URL,
-        data=json.dumps(body, separators=(",", ":")),
-        headers={
-            "origin": "https://sentinel.openai.com",
-            "referer": (
-                f"https://sentinel.openai.com/backend-api/sentinel/frame.html"
-                f"?sv={SENTINEL_VERSION}"
-            ),
-            "content-type": "text/plain;charset=UTF-8",
-            "accept": "*/*",
-            "accept-encoding": "gzip, deflate, br, zstd",
-            "accept-language": "en-US,en;q=0.9",
-            "user-agent": WINDOWS_USER_AGENT,
-            "sec-ch-ua": SEC_CH_UA,
-            "sec-ch-ua-mobile": SEC_CH_UA_MOBILE,
-            "sec-ch-ua-platform": SEC_CH_UA_PLATFORM,
-            "sec-fetch-dest": "empty",
-            "sec-fetch-mode": "cors",
-            "sec-fetch-site": "same-origin",
-        },
-        timeout=max(10, int(timeout_ms / 1000)),
-    )
+    _headers = {
+        "origin": "https://sentinel.openai.com",
+        "referer": (
+            f"https://sentinel.openai.com/backend-api/sentinel/frame.html"
+            f"?sv={SENTINEL_VERSION}"
+        ),
+        "content-type": "text/plain;charset=UTF-8",
+        "accept": "*/*",
+        "accept-encoding": "gzip, deflate, br, zstd",
+        "accept-language": "en-US,en;q=0.9",
+        "user-agent": WINDOWS_USER_AGENT,
+        "sec-ch-ua": SEC_CH_UA,
+        "sec-ch-ua-mobile": SEC_CH_UA_MOBILE,
+        "sec-ch-ua-platform": SEC_CH_UA_PLATFORM,
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-origin",
+    }
+    _data = json.dumps(body, separators=(",", ":"))
+    _timeout = max(10, int(timeout_ms / 1000))
+
+    # Attempt trên session gốc; nếu TLS-library corruption → retry fresh session.
+    # Lỗi khác (HTTP, JSON) propagate như cũ (RuntimeError ở dưới / caller catch).
+    resp = None
+    for attempt in range(_TLS_RETRY_MAX + 1):
+        active = session if attempt == 0 else _make_fresh_session(session)
+        try:
+            resp = active.post(SENTINEL_REQ_URL, data=_data, headers=_headers, timeout=_timeout)
+            break
+        except Exception as exc:  # noqa: BLE001
+            if not _is_tls_library_error(exc) or attempt >= _TLS_RETRY_MAX:
+                raise
+            logger.warning(
+                "QuickJS /sentinel/req TLS-library error (retry %d/%d) → fresh session: %s",
+                attempt + 1, _TLS_RETRY_MAX, exc,
+            )
+        finally:
+            if attempt > 0 and active is not session:
+                try:
+                    active.close()
+                except Exception:  # noqa: BLE001
+                    pass
     if getattr(resp, "status_code", 0) != 200:
         raise RuntimeError(f"/sentinel/req HTTP {resp.status_code}")
     payload = resp.json()

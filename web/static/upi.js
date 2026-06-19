@@ -47,13 +47,15 @@
     modalAmount:   $('upi-qr-modal-amount'),
     modalSource:   $('upi-qr-modal-source'),
     modalCs:       $('upi-qr-modal-cs'),
+    modalPayLink:  $('upi-qr-modal-paylink'),
+    modalPayLinkEmpty: $('upi-qr-modal-paylink-empty'),
+    modalCopyLink: $('upi-qr-modal-copy-link'),
     modalCountdown:$('upi-qr-modal-countdown'),
     modalExpVn:    $('upi-qr-modal-exp-vn'),
     modalExpIn:    $('upi-qr-modal-exp-in'),
     modalClose:    $('upi-qr-modal-close'),
     modalOk:       $('upi-qr-modal-ok'),
     modalCopyImg:  $('upi-qr-modal-copy-img'),
-    modalRetry:    $('upi-qr-modal-retry'),
     modalOpen:     $('upi-qr-modal-open'),
   };
 
@@ -329,13 +331,13 @@
       } else {
         actionBtns += `<button class="icon-btn" data-action="retry" data-id="${escHtml(id)}" title="Retry">${window.GptUi.icon('retry')}</button>`;
       }
-      if (j.status === 'success' && j.return_url) {
-        actionBtns += `<button class="icon-btn" data-action="copy-checkout" data-id="${escHtml(id)}" title="Copy checkout URL">${window.GptUi.icon('copy')}</button>`;
+      if (j.status === 'success' && j.has_qr) {
+        actionBtns += `<button class="icon-btn" data-action="copy-qr-img" data-id="${escHtml(id)}" title="Copy ảnh QR vào clipboard">${window.GptUi.icon('copy')}</button>`;
       }
       // Recheck plan: force check-session ngay (bỏ qua cache), kể cả khi đã có
       // plan_check — cho user ép kiểm tra lại sau khi UPI pump lên Plus.
       if (j.status === 'success') {
-        actionBtns += `<button class="icon-btn upi-recheck-btn" data-action="recheck-plan" data-id="${escHtml(id)}" title="Recheck plan">${window.GptUi.icon('retry')}</button>`;
+        actionBtns += `<button class="icon-btn upi-recheck-btn" data-action="recheck-plan" data-id="${escHtml(id)}" title="Recheck plan">${window.GptUi.icon('verify')}</button>`;
       }
       actionBtns += `<button class="icon-btn icon-danger" data-action="remove" data-id="${escHtml(id)}" title="Remove">${window.GptUi.icon('remove')}</button>`;
 
@@ -555,39 +557,26 @@
     _tickModalCountdown();
   }
 
+  // Set link thanh toán hosted (payments.stripe.com/upi/instructions/...).
+  // Hiện anchor + nút copy khi có; ẩn khi không.
+  function _setModalPayLink(url) {
+    const has = !!url;
+    if (dom.modalPayLink) {
+      dom.modalPayLink.style.display = has ? '' : 'none';
+      if (has) dom.modalPayLink.href = url;
+    }
+    if (dom.modalPayLinkEmpty) dom.modalPayLinkEmpty.style.display = has ? 'none' : '';
+    if (dom.modalCopyLink) {
+      dom.modalCopyLink.style.display = has ? '' : 'none';
+      dom.modalCopyLink.dataset.link = url || '';
+    }
+  }
+
   function _tickModalCountdown() {
     if (dom.modal.style.display === 'none') return;
     const cd = fmtCountdown(_modalExpiresAt);
     dom.modalCountdown.textContent = _modalExpiresAt ? (cd.text || '-') : '-';
     dom.modalCountdown.classList.toggle('upi-countdown-expired', cd.expired);
-    _updateModalRetryVisibility();
-  }
-
-  // Nút Retry trong modal CHỈ hiện khi:
-  //   - Job status = success (đã ra QR rồi).
-  //   - QR đã expired (countdown <= 0).
-  //   - plan_check đã chạy thật (ok=true) — tránh hiện sớm khi chưa biết Plus
-  //     hay không, gây retry không cần thiết.
-  //   - Plan vẫn Free (is_plus=false) — đã verify mà chưa lên Plus → user
-  //     muốn chạy lại flow (đổi proxy / promo expired / Stripe drop).
-  // Mọi case khác → ẩn (kể cả khi đang poll plan, hoặc đã lên Plus → không
-  // cần retry nữa).
-  function _updateModalRetryVisibility() {
-    if (!dom.modalRetry) return;
-    if (!_modalActiveJobId || dom.modal.style.display === 'none') {
-      dom.modalRetry.hidden = true;
-      return;
-    }
-    const j = state.jobs.get(_modalActiveJobId);
-    if (!j || j.status !== 'success') {
-      dom.modalRetry.hidden = true;
-      return;
-    }
-    const cd = fmtCountdown(j.qr_expires_at);
-    const expired = !!(j.qr_expires_at && cd.expired);
-    const planChecked = !!(j.plan_check && j.plan_check.ok === true);
-    const stillFree = planChecked && j.plan_check.is_plus === false;
-    dom.modalRetry.hidden = !(expired && stillFree);
   }
 
   // Cập nhật mọi badge countdown trên job list (data-exp) + modal.
@@ -618,10 +607,10 @@
     dom.modalAmount.textContent = j.amount ? fmtAmount(j.amount) : '-';
     dom.modalSource.textContent = j.qr_source || '-';
     dom.modalCs.textContent = j.checkout_session || '-';
+    _setModalPayLink(j.payment_link);
     _setModalExpiry(j.qr_expires_at);
     dom.modal.style.display = 'flex';
     if (dom.modalOk) dom.modalOk.focus();
-    _updateModalRetryVisibility();
 
     // Lấy ảnh từ Blob cache; nếu chưa có → fetch về (dùng spinner placeholder).
     const finishedAt = j.finished_at || 0;
@@ -649,7 +638,6 @@
     dom.modalImg.removeAttribute('src');
     _modalActiveJobId = null;
     _modalExpiresAt = null;
-    if (dom.modalRetry) dom.modalRetry.hidden = true;
   }
 
   dom.modalClose.addEventListener('click', closeQrModal);
@@ -663,25 +651,34 @@
     }
   });
 
-  // Copy QR image vào clipboard (PNG). Yêu cầu Clipboard API (HTTPS hoặc
-  // localhost). Dùng ClipboardItem với async resolver Promise<Blob> để hỗ trợ
-  // Safari (Safari yêu cầu user-gesture sync, nên truyền Promise thay vì await
-  // blob trước khi gọi clipboard.write).
-  // Edge: SVG QR (qr_source dạng SVG) → convert sang PNG canvas trước khi copy
-  //   (Clipboard API không support image/svg+xml type mọi trình duyệt).
-  dom.modalCopyImg.addEventListener('click', async () => {
-    if (!_modalActiveJobId) return;
-    const j = state.jobs.get(_modalActiveJobId);
+  // Copy link thanh toán hosted (payments.stripe.com/upi/instructions/...).
+  if (dom.modalCopyLink) {
+    dom.modalCopyLink.addEventListener('click', () => {
+      const url = dom.modalCopyLink.dataset.link || '';
+      if (!url) {
+        window.GptUi.toast('Chưa có link thanh toán', { type: 'warn' });
+        return;
+      }
+      window.GptUi.copyWithToast(url, 'Đã copy link thanh toán');
+    });
+  }
+
+  // Copy QR image vào clipboard (PNG). Tái dùng cho nút trong modal + nút copy
+  // ở job item. Yêu cầu Clipboard API (HTTPS/localhost). SVG QR → convert PNG
+  // canvas trước (Clipboard API không nhận image/svg+xml mọi trình duyệt).
+  async function copyQrToClipboard(jobId) {
+    if (!jobId) return;
+    const j = state.jobs.get(jobId);
     const finishedAt = (j && j.finished_at) || 0;
     if (!navigator.clipboard || !window.ClipboardItem) {
-      await Dialog.alert({
-        message: 'Trình duyệt không hỗ trợ copy ảnh. Cần HTTPS hoặc localhost + Chrome/Edge/Safari mới.',
-      }).catch(() => {});
+      window.GptUi.toast(
+        'Trình duyệt không hỗ trợ copy ảnh (cần HTTPS/localhost + Chrome/Edge/Safari)',
+        { type: 'error' },
+      );
       return;
     }
     try {
-      const entry = await fetchQrBlob(_modalActiveJobId, finishedAt);
-      // Đảm bảo image/png — convert nếu source là SVG.
+      const entry = await fetchQrBlob(jobId, finishedAt);
       let pngBlob = entry.blob;
       if (!pngBlob || !pngBlob.type || !pngBlob.type.includes('png')) {
         pngBlob = await _blobToPng(entry.url);
@@ -689,17 +686,16 @@
       await navigator.clipboard.write([
         new ClipboardItem({ 'image/png': pngBlob }),
       ]);
-      // Notify nhẹ (không Dialog vì hành động tích cực) — re-use copyText
-      // toast nếu GptUi expose, fallback là log.
-      if (window.GptUi && typeof window.GptUi.toast === 'function') {
-        window.GptUi.toast('Đã copy QR vào clipboard');
-      }
+      window.GptUi.toast('Đã copy QR vào clipboard', { type: 'success' });
     } catch (err) {
-      await Dialog.alert({
-        message: 'Copy QR thất bại: ' + (err && err.message ? err.message : err),
-      }).catch(() => {});
+      window.GptUi.toast(
+        'Copy QR thất bại: ' + (err && err.message ? err.message : err),
+        { type: 'error' },
+      );
     }
-  });
+  }
+
+  dom.modalCopyImg.addEventListener('click', () => copyQrToClipboard(_modalActiveJobId));
 
   // Convert image at given URL → PNG Blob qua canvas. Dùng cho case QR là SVG.
   // CORS-safe: blob URL same-origin, canvas exportable.
@@ -725,17 +721,6 @@
       img.src = url;
     });
   }
-
-  dom.modalRetry.addEventListener('click', async () => {
-    if (!_modalActiveJobId) return;
-    const id = _modalActiveJobId;
-    closeQrModal();
-    try {
-      await api(`/api/upi/jobs/${id}/retry`, { method: 'POST' });
-    } catch (err) {
-      await Dialog.alert({ message: err.message }).catch(() => {});
-    }
-  });
 
   dom.modalOpen.addEventListener('click', () => {
     if (!_modalActiveJobId) return;
@@ -821,10 +806,10 @@
           .catch(async (err) => { await Dialog.alert({ message: err.message }); });
       } else if (action === 'view-qr') {
         openQrModal(id);
-      } else if (action === 'copy-checkout') {
-        const j = state.jobs.get(id);
-        if (j && j.return_url) window.GptUi.copyText(j.return_url);
+      } else if (action === 'copy-qr-img') {
+        copyQrToClipboard(id);
       } else if (action === 'recheck-plan') {
+        window.GptUi.toast('Đang kiểm tra lại plan…', { type: 'info' });
         triggerPlanCheck(id, { force: true });
       }
       return;
@@ -1141,12 +1126,8 @@
       dom.modalAmount.textContent = j.amount ? fmtAmount(j.amount) : '-';
       dom.modalSource.textContent = j.qr_source || '-';
       dom.modalCs.textContent = j.checkout_session || '-';
+      _setModalPayLink(j.payment_link);
       _setModalExpiry(j.qr_expires_at);
-      // plan_check có thể vừa update → re-evaluate retry button visibility
-      // (countdown đã ăn _setModalExpiry → _tickModalCountdown đã gọi rồi,
-      // nhưng plan_check có thể đổi mà không kèm qr_expires_at đổi → call
-      // tường minh để chắc).
-      _updateModalRetryVisibility();
       if (j.has_qr) {
         fetchQrBlob(j.id, j.finished_at || 0).then((entry) => {
           if (_modalActiveJobId === j.id) {

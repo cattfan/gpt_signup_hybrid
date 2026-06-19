@@ -802,14 +802,15 @@
         <div class="upi-qr-modal-row"><span class="muted">Amount:</span> <span id="upi-qr-modal-amount">-</span></div>
         <div class="upi-qr-modal-row"><span class="muted">Source:</span> <span id="upi-qr-modal-source">-</span></div>
         <div class="upi-qr-modal-row"><span class="muted">Checkout:</span> <code id="upi-qr-modal-cs">-</code></div>
+        <div class="upi-qr-modal-row"><span class="muted">Link TT:</span> <a id="upi-qr-modal-paylink" href="#" target="_blank" rel="noopener noreferrer" style="display:none;word-break:break-all;">mở link UPI</a><span id="upi-qr-modal-paylink-empty">-</span></div>
         <div class="upi-qr-modal-row"><span class="muted">Hết hạn sau:</span> <span id="upi-qr-modal-countdown" class="upi-countdown">-</span></div>
         <div class="upi-qr-modal-row"><span class="muted">Hết hạn (VN):</span> <span id="upi-qr-modal-exp-vn">-</span></div>
         <div class="upi-qr-modal-row"><span class="muted">Hết hạn (IN):</span> <span id="upi-qr-modal-exp-in">-</span></div>
       </div>
     </div>
     <footer class="modal-foot">
-      <button id="upi-qr-modal-copy-img" class="btn btn-ghost" type="button">Copy QR to Clipboard</button>
-      <button id="upi-qr-modal-retry" class="btn btn-primary" type="button" hidden>Retry</button>
+      <button id="upi-qr-modal-copy-img" class="btn btn-ghost" type="button">Copy QR</button>
+      <button id="upi-qr-modal-copy-link" class="btn btn-primary" type="button" style="display:none;">Copy link payment</button>
       <button id="upi-qr-modal-open" class="btn btn-ghost" type="button">Mở tab mới</button>
       <button id="upi-qr-modal-ok" class="btn btn-primary" type="button">Đóng</button>
     </footer>
