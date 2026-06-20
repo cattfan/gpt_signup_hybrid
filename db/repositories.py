@@ -407,17 +407,16 @@ def _validate_type_constraint(key: str, value: Any) -> None:
         return
 
     if key == "upi.approve_retry_delay":
-        # Delay (giây) giữa 2 lần retry approve. Floor 5s — Stripe approve
-        # endpoint trả `blocked` rate-limit khi tốc độ < 5s/req trên cùng IP.
+        # Delay (giây) giữa 2 lần retry approve. Floor 2s.
         # Cap 60s — > 60s vô nghĩa với approve loop (QR expire sau 5 phút).
-        # Float để cho phép 5.5, 7.0, 10.0, ... mà vẫn validate tight.
+        # Float để cho phép 2.5, 5.0, 7.0, 10.0, ... mà vẫn validate tight.
         if not isinstance(value, (int, float)) or isinstance(value, bool):
             raise RepositoryError(
                 "set", TypeError(f"{key}: must be number, got {type(value).__name__}")
             )
-        if not (5.0 <= float(value) <= 60.0):
+        if not (2.0 <= float(value) <= 60.0):
             raise RepositoryError(
-                "set", ValueError(f"{key}: must be in [5, 60] seconds, got {value}")
+                "set", ValueError(f"{key}: must be in [2, 60] seconds, got {value}")
             )
         return
 

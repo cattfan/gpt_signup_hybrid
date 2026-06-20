@@ -1572,9 +1572,9 @@ async def run_upi_qr_probe(
         effective_approve_delay: float = float(APPROVE_DELAY)
     else:
         effective_approve_delay = float(approve_retry_delay)
-        if not (5.0 <= effective_approve_delay <= 60.0):
+        if not (2.0 <= effective_approve_delay <= 60.0):
             raise UpiQrError(
-                f"approve_retry_delay phải trong [5, 60] giây, got {approve_retry_delay}"
+                f"approve_retry_delay phải trong [2, 60] giây, got {approve_retry_delay}"
             )
     # Restart logic chỉ kích hoạt khi cả 2 > 0.
     restart_enabled = restart_threshold > 0 and max_restarts > 0

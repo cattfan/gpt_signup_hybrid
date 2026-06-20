@@ -4207,11 +4207,9 @@ class UpiJobManager:
         return self._approve_retry_delay
 
     def set_approve_retry_delay(self, seconds: float) -> None:
-        # Floor 5s = empirical Stripe approve rate-limit threshold (đã reproduce
-        # bug `blocked` http=200 lặp lại với 3s delay). Cap 60s — > 60s vô nghĩa
-        # với QR expire 5 phút.
-        if seconds < 5 or seconds > 60:
-            raise ValueError("approve_retry_delay phải trong [5, 60] giây")
+        # Floor 2s. Cap 60s — > 60s vô nghĩa với QR expire 5 phút.
+        if seconds < 2 or seconds > 60:
+            raise ValueError("approve_retry_delay phải trong [2, 60] giây")
         self._approve_retry_delay = float(seconds)
 
     @property

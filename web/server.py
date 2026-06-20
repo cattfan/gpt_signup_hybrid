@@ -1688,7 +1688,7 @@ class SetUpiConfigRequest(BaseModel):
     max_concurrent: int | None = Field(default=None, ge=1)
     job_timeout: float | None = Field(default=None, ge=60, le=7200)
     approve_retries: int | None = Field(default=None, ge=1, le=2000)
-    approve_retry_delay: float | None = Field(default=None, ge=5, le=60)
+    approve_retry_delay: float | None = Field(default=None, ge=2, le=60)
     notify_enabled: bool | None = Field(default=None)
     restart_threshold: int | None = Field(default=None, ge=0, le=1000)
     max_restarts: int | None = Field(default=None, ge=0, le=2000)

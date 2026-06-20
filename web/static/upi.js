@@ -89,6 +89,10 @@
   // _planCheckInflight dedupe request đang bay; _planPollState quản poller/job.
   const _planCheckInflight = new Set();
 
+  // Track jobs đã auto-trigger (open QR + copy + recheck) khi countdown hết.
+  // Tránh trigger lặp mỗi giây (updateCountdowns chạy mỗi 1s).
+  const _autoTriggeredOnExpiry = new Set();
+
   // Auto-poll: tối đa 6 lần check THẬT, mỗi lần cách ~20s tính TỪ lúc lần
   // trước hoàn tất (completion-driven, KHÔNG setInterval song song) — 1 check
   // worst-case ~40s nên timer cứng 20s sẽ chồng request.
@@ -593,7 +597,18 @@
       if (cd.expired) {
         const row = el.closest('[data-id]');
         if (row && row.dataset.id) {
-          startPlanPoll(row.dataset.id);
+          const jobId = row.dataset.id;
+          startPlanPoll(jobId);
+          // Auto open QR modal + copy QR + recheck — chỉ 1 lần per job.
+          if (!_autoTriggeredOnExpiry.has(jobId)) {
+            _autoTriggeredOnExpiry.add(jobId);
+            const j = state.jobs.get(jobId);
+            if (j && j.has_qr) {
+              openQrModal(jobId);
+              copyQrToClipboard(jobId);
+            }
+            triggerPlanCheck(jobId, { force: true });
+          }
         }
       }
     });
@@ -950,13 +965,11 @@
   });
 
   dom.approveRetryDelay.addEventListener('change', async () => {
-    // Floor 5s — Stripe approve trả `blocked` rate-limit khi tốc độ < 5s/req.
-    // Clamp client-side trước khi POST để UX rõ (input min=5, nhưng user có
-    // thể paste giá trị nhỏ hơn).
+    // Clamp client-side trước khi POST để UX rõ (input min=2).
     let val = parseInt(dom.approveRetryDelay.value, 10);
-    if (isNaN(val) || val < 5) {
-      val = 5;
-      dom.approveRetryDelay.value = '5';
+    if (isNaN(val) || val < 2) {
+      val = 2;
+      dom.approveRetryDelay.value = '2';
     } else if (val > 60) {
       val = 60;
       dom.approveRetryDelay.value = '60';
@@ -1157,6 +1170,7 @@
     state.order = state.order.filter((id) => id !== jobId);
     revokeQrBlob(jobId);
     _stopPlanPoll(jobId);  // dọn timer poll (H1: callback sau remove sẽ TypeError + leak)
+    _autoTriggeredOnExpiry.delete(jobId);
     if (state.activeJobId === jobId) { state.activeJobId = null; renderLog(null); }
     if (_modalActiveJobId === jobId) closeQrModal();
     renderJobs();

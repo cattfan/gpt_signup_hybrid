@@ -225,9 +225,9 @@
             <option value="6">6 — approve only</option>
           </select>
         </label>
-        <label class="input-group config-field-short" title="Delay (giây) giữa 2 lần retry approve. Tối thiểu 5s — Stripe approve trả `blocked` rate-limit khi tốc độ < 5s/req trên cùng IP. Tăng lên 7-10s nếu vẫn bị block thường xuyên.">
+        <label class="input-group config-field-short" title="Delay (giây) giữa 2 lần retry approve. Tối thiểu 2s. Tăng lên 7-10s nếu bị block thường xuyên.">
           <span class="input-label">Retry delay (s)</span>
-          <input type="number" id="upi-approve-retry-delay" value="5" min="5" max="60" step="1" />
+          <input type="number" id="upi-approve-retry-delay" value="5" min="2" max="60" step="1" />
         </label>
         <label class="input-group config-field-short" title="Số `result=exception` LIÊN TIẾP để trigger restart checkout (lấy link payment mới). Default 1 = mỗi exception là 1 restart. Bộ đếm retry KHÔNG reset qua restart — giữ cộng dồn. 0 = tắt restart (giữ behavior cũ).">
           <span class="input-label">Restart threshold</span>
