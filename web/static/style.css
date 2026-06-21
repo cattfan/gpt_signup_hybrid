@@ -565,6 +565,12 @@ body {
   background: var(--bg);
 }
 
+@media (max-width: 700px) {
+  .upi-head-config {
+    display: none;
+  }
+}
+
 .settings-field-compact {
   max-width: 320px;
 }
@@ -2967,6 +2973,16 @@ body {
     grid-template-rows: 620px 300px 160px 128px 128px;
   }
 
+  #tab-upi {
+    grid-template-areas:
+      "input"
+      "jobs"
+      "log"
+      "success"
+      "error";
+    grid-template-rows: max-content min(46dvh, 360px) 160px 128px 128px;
+  }
+
   #tab-session,
   #tab-link {
     grid-template-areas:
@@ -2985,7 +3001,8 @@ body {
   .grid > .card-input,
   #tab-reg > .card-input,
   #tab-session > .card-input,
-  #tab-link > .card-input {
+  #tab-link > .card-input,
+  #tab-upi > .card-input {
     height: auto;
     contain: none;
   }
@@ -2997,7 +3014,8 @@ body {
 
   #tab-reg > .card-input,
   #tab-session > .card-input,
-  #tab-link > .card-input {
+  #tab-link > .card-input,
+  #tab-upi > .card-input {
     min-height: max-content;
     overflow: hidden;
   }
@@ -3074,7 +3092,8 @@ body {
   }
 
   #tab-reg .card-settings-row-mixed,
-  #tab-link .card-settings-row-mixed {
+  #tab-link .card-settings-row-mixed,
+  #tab-upi .card-settings-row-mixed {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   }
 
@@ -3450,6 +3469,17 @@ body {
   background: rgba(160, 160, 160, 0.12);
   border-color: rgba(160, 160, 160, 0.5);
   color: var(--muted, #9ca3af);
+}
+
+/* Re-login cycle badge ↻ N — chỉ hiện khi cycle_count > 1 (đã re-login do
+ * approve all-blocked). Màu tím/indigo để phân biệt với plan/countdown. */
+.upi-cycle-badge {
+  margin-left: 6px;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  background: rgba(129, 140, 248, 0.16);
+  border-color: rgba(129, 140, 248, 0.6);
+  color: rgb(165, 180, 252);
 }
 
 .upi-countdown {

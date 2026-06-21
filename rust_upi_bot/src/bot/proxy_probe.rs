@@ -10,7 +10,7 @@
 //!   - `Ip` — timeout/reset/refused/tunnel (IP-level, có thể rotate SID)
 //!   - `BadFormat` — line không parse được
 
-use crate::proxy_format::materialize_proxy;
+use crate::proxy_format::materialize_for_client;
 use anyhow::Result;
 use reqwest::{Client, Proxy};
 use std::time::{Duration, Instant};
@@ -35,6 +35,7 @@ pub struct ProbeResult {
     pub detail: String,
     pub latency_ms: u64,
     /// Concrete URL đã probe (đã materialize SID nếu có) — để log mask.
+    #[allow(dead_code)]
     pub probed_url: Option<String>,
 }
 
@@ -70,7 +71,7 @@ fn classify(err: &reqwest::Error) -> ProbeReason {
 /// Probe 1 raw proxy line. Materialize SID nội bộ (nếu line có template) →
 /// build short-lived reqwest client với proxy → GET endpoint.
 pub async fn probe_proxy_line(raw_line: &str) -> ProbeResult {
-    let url = match materialize_proxy(raw_line, 8) {
+    let url = match materialize_for_client(raw_line, 8) {
         Ok(u) => u,
         Err(e) => return ProbeResult::err(ProbeReason::BadFormat, e.to_string()),
     };

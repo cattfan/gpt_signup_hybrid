@@ -87,6 +87,7 @@ impl SessionBuffer {
             .retain(|_, e| now.duration_since(e.first_at) <= ttl);
     }
 
+    #[allow(dead_code)]
     pub fn pending_count(&self) -> usize {
         self.entries.len()
     }

@@ -101,3 +101,4 @@ rust_upi_bot/target
 _expire_const.py
 playwright-browsers/
 *.spec.bak
+upi-mobile-after.png

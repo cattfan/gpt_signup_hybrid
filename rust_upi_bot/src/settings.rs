@@ -15,12 +15,16 @@ use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 use std::sync::Mutex;
 
+/// Settings key cho login proxy global (admin-only). Dot-namespace theo rule.
+const LOGIN_PROXY_KEY: &str = "proxy.login";
+
 /// 1 dòng trong bảng `bot_bans`, dùng để render `/banlist`.
 #[derive(Debug, Clone)]
 pub struct BanRecord {
     pub user_id: i64,
     pub username: Option<String>,
     pub reason: Option<String>,
+    #[allow(dead_code)]
     pub banned_at: i64,
 }
 
@@ -112,8 +116,33 @@ impl Settings {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn get_u32(&self, key: &str) -> Option<u32> {
         self.get(key).and_then(|s| s.parse().ok())
+    }
+
+    // ── login proxy (admin-only, global) ──────────────────────────────────
+    /// Raw login proxy line do admin set (key `proxy.login`). None nếu chưa set
+    /// hoặc rỗng. Mọi consumer PHẢI materialize trước khi feed client.
+    pub fn get_login_proxy(&self) -> Option<String> {
+        self.get(LOGIN_PROXY_KEY)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
+
+    /// Set login proxy raw line (caller PHẢI validate qua
+    /// `proxy_format::validate_and_mask` trước).
+    pub fn set_login_proxy(&self, raw: &str) -> Result<()> {
+        self.set(LOGIN_PROXY_KEY, raw)
+    }
+
+    /// Xóa login proxy. Trả `true` nếu có row bị xóa.
+    pub fn remove_login_proxy(&self) -> Result<bool> {
+        let n = self.lock().execute(
+            "DELETE FROM settings WHERE key = ?1",
+            params![LOGIN_PROXY_KEY],
+        )?;
+        Ok(n > 0)
     }
 
     // ── bot_users ───────────────────────────────────────────────────────

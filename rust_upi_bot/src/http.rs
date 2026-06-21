@@ -15,6 +15,7 @@ use std::time::Duration;
 #[derive(Debug, Clone)]
 pub struct HttpResponse {
     pub status: u16,
+    #[allow(dead_code)]
     pub headers: HeaderMap,
     pub body: String,
 }

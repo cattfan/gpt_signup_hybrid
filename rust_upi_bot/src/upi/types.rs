@@ -64,6 +64,7 @@ pub struct RefreshAttemptSummary {
 /// Auth artifacts passed in từ session.json.
 #[derive(Debug, Clone)]
 pub struct UpiAuth {
+    #[allow(dead_code)]
     pub email: String,
     pub access_token: String,
     /// Cookie header string `name=value; name=value` cho chatgpt.com.
@@ -72,6 +73,7 @@ pub struct UpiAuth {
 }
 
 #[derive(thiserror::Error, Debug)]
+#[allow(dead_code)]
 pub enum UpiError {
     #[error("invalid params: {0}")]
     InvalidParams(String),

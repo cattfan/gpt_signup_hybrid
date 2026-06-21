@@ -152,6 +152,44 @@ pub fn render_your_turn(lang: Lang, email: &str) -> String {
     }
 }
 
+/// 1 dòng trạng thái proxy cho pre-flight card. `label` = "Login"/"User".
+pub fn render_proxy_line(lang: Lang, label: &str, ok: bool, status: &str, detail: &str, latency_ms: u64) -> String {
+    let icon = if ok { "✅" } else { "❌" };
+    if ok {
+        let ip = match lang {
+            Lang::Vi => "IP",
+            Lang::En => "IP",
+        };
+        format!("{} {}: {} · {} {} · {}ms", icon, label, status, ip, detail, latency_ms)
+    } else {
+        format!("{} {}: {} · {}", icon, label, status, detail)
+    }
+}
+
+/// Card pre-flight khi 1 proxy chết → chặn chạy (fail-fast).
+pub fn render_preflight_blocked(lang: Lang, email: &str, lines: &[String]) -> String {
+    let body = lines.join("\n");
+    match lang {
+        Lang::Vi => format!(
+            "⛔ KHÔNG THỂ CHẠY · {}\nProxy không khả dụng — đã chặn trước khi chạy.\n\n{}\n\n↳ Báo admin kiểm tra proxy login, hoặc /proxy_remove rồi thử lại.",
+            email, body
+        ),
+        Lang::En => format!(
+            "⛔ CANNOT RUN · {}\nProxy unavailable — blocked before start.\n\n{}\n\n↳ Ask admin to check the login proxy, or /proxy_remove and retry.",
+            email, body
+        ),
+    }
+}
+
+/// Card pre-flight khi proxy OK → thông báo ngắn rồi vào hàng chờ.
+pub fn render_preflight_ok(lang: Lang, email: &str, lines: &[String]) -> String {
+    let body = lines.join("\n");
+    match lang {
+        Lang::Vi => format!("🌐 Kiểm tra proxy · {}\n{}", email, body),
+        Lang::En => format!("🌐 Proxy check · {}\n{}", email, body),
+    }
+}
+
 pub fn render_done_ok(lang: Lang, email: &str, elapsed_s: f64, expires: &str, attempts: usize) -> String {
     let bar = progress_bar(100);
     let activated = if attempts > 0 {

@@ -483,7 +483,9 @@ pub async fn login_pure_request(
     let (mut device_id, landing) = bootstrap(&client, email, true, log).await?;
     log(&format!("[login] landing: {}", short(&landing, 90)));
     let mut flow = detect_flow(&landing);
+    #[allow(unused_assignments)]
     let mut page_type = String::new();
+    #[allow(unused_assignments)]
     let mut continue_url = String::new();
 
     // Fallback: landing không xác định → re-bootstrap KHÔNG login_hint (fresh

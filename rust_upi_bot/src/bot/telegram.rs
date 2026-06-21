@@ -43,10 +43,12 @@ pub struct Message {
     pub from: Option<User>,
     pub text: Option<String>,
     pub document: Option<Document>,
+    #[allow(dead_code)]
     pub caption: Option<String>,
     /// Telegram message entities (bold/italic/link/...). Offset/length tính
     /// theo UTF-16 code unit. Giữ raw `Value` để re-send nguyên format.
     pub entities: Option<Vec<Value>>,
+    #[allow(dead_code)]
     pub date: i64,
 }
 
@@ -54,6 +56,7 @@ pub struct Message {
 pub struct Chat {
     pub id: i64,
     #[serde(rename = "type")]
+    #[allow(dead_code)]
     pub chat_type: String,
 }
 
@@ -62,6 +65,7 @@ pub struct User {
     pub id: i64,
     pub username: Option<String>,
     pub first_name: Option<String>,
+    #[allow(dead_code)]
     pub is_bot: bool,
 }
 
@@ -70,6 +74,7 @@ pub struct Document {
     pub file_id: String,
     pub file_name: Option<String>,
     pub file_size: Option<u64>,
+    #[allow(dead_code)]
     pub mime_type: Option<String>,
 }
 

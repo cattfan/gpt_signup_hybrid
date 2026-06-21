@@ -408,6 +408,7 @@ pub struct RefreshAttempt {
     pub http_status: Option<u16>,
     pub ok: bool,
     pub keys: Vec<String>,
+    #[allow(dead_code)]
     pub error: Option<Value>,
     pub error_type: Option<String>,
     pub error_msg: Option<String>,

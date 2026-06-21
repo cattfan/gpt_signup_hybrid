@@ -20,8 +20,10 @@ pub const SENSITIVE_TERMS: &[&str] = &[
 
 #[derive(Debug, Clone)]
 pub struct Match {
+    #[allow(dead_code)]
     pub source: String,
     pub path: String,
+    #[allow(dead_code)]
     pub kind: String, // "key" | "value"
     pub value: Value,
 }

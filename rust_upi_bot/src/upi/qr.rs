@@ -11,12 +11,15 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct QrDownloadResult {
+    #[allow(dead_code)]
     pub downloaded: bool,
     pub rendered: bool,
     pub path: Option<PathBuf>,
     pub source: Option<String>,
+    #[allow(dead_code)]
     pub html_path: Option<PathBuf>,
     pub reason: Option<String>,
+    #[allow(dead_code)]
     pub bytes: Option<u64>,
 }
 

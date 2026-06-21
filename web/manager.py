@@ -4072,7 +4072,7 @@ def get_link_manager(job_repo: "JobRepository | None" = None) -> LinkJobManager:
 #   - Multi-mode → KHÔNG stagger giữa start (yêu cầu UI: "multi thì chạy luôn ko cần delay").
 #   - In-memory only (không persist DB) — UPI jobs ngắn hạn, user chạy lại được.
 
-from .upi_runner import UpiQrError, UpiQrResult, run_upi_qr_probe  # noqa: E402
+from .upi_runner import UpiQrError, UpiQrResult, cycle_all_blocked, run_upi_qr_probe  # noqa: E402
 
 _UPI_QR_DIR = Path(__file__).resolve().parents[1] / "runtime" / "upi_qr"
 
@@ -4108,6 +4108,16 @@ _DEFAULT_UPI_APPROVE_RETRY_DELAY = 5.0  # giây — Stripe approve floor để t
 _DEFAULT_UPI_RESTART_THRESHOLD = 1
 _DEFAULT_UPI_MAX_RESTARTS = 500
 _DEFAULT_UPI_PROXY_FROM_STEP = 3     # giữ default cũ — step 1-2 DIRECT, 3-6 via proxy
+# Số outer-cycle re-login tối đa khi MỌI approve attempt của 1 cycle đều
+# IP/edge-reject. 1 = behavior cũ (không re-login). User override qua Settings.
+_DEFAULT_UPI_MAX_OUTER_CYCLES = 1
+# Cooldown (giây) giữa 2 outer-cycle re-login — phá burst-signature (tránh
+# OpenAI/Cloudflare nhận diện chuỗi login dồn dập từ cùng account).
+_UPI_INTER_CYCLE_COOLDOWN = 10.0
+# Số approve attempt IP/edge-reject (blocked|403|429) LIÊN TIẾP để break cycle
+# sớm → re-login (chỉ áp dụng khi max_outer_cycles>1). 0 = off (chạy hết
+# approve_retries mới re-login). Default 12 ≈ 1 batch + buffer.
+_DEFAULT_UPI_RELOGIN_BLOCK_STREAK = 12
 
 
 @dataclass
@@ -4152,6 +4162,9 @@ class UpiJob:
     # Cache kết quả check-session gần nhất để frontend không phải re-fetch khi
     # user mở lại UI / re-render. None = chưa check bao giờ.
     plan_check: dict[str, Any] | None = None
+    # Số outer-cycle re-login đã chạy (1 = không re-login; >1 = đã re-login khi
+    # all-blocked). UI badge ↻ N/M chỉ hiện khi cycle_count > 1.
+    cycle_count: int = 1
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -4174,6 +4187,7 @@ class UpiJob:
             "started_at": self.started_at,
             "finished_at": self.finished_at,
             "plan_check": self.plan_check,
+            "cycle_count": self.cycle_count,
             "can_check_plan": bool(self._session_cookies),
             "duration": (
                 (self.finished_at or time.time()) - self.started_at if self.started_at else None
@@ -4208,6 +4222,8 @@ class UpiJobManager:
         self._restart_threshold = _DEFAULT_UPI_RESTART_THRESHOLD
         self._max_restarts = _DEFAULT_UPI_MAX_RESTARTS
         self._proxy_from_step = _DEFAULT_UPI_PROXY_FROM_STEP
+        self._max_outer_cycles = _DEFAULT_UPI_MAX_OUTER_CYCLES
+        self._relogin_block_streak = _DEFAULT_UPI_RELOGIN_BLOCK_STREAK
         self._tasks: dict[str, asyncio.Task] = {}
         self._job_queue: asyncio.Queue[str] = asyncio.Queue()
         self._workers: list[asyncio.Task] = []
@@ -4287,6 +4303,24 @@ class UpiJobManager:
             raise ValueError("proxy_from_step phải trong [1, 6]")
         self._proxy_from_step = n
 
+    @property
+    def max_outer_cycles(self) -> int:
+        return self._max_outer_cycles
+
+    def set_max_outer_cycles(self, n: int) -> None:
+        if n < 1 or n > 5:
+            raise ValueError("max_outer_cycles phải trong [1, 5]")
+        self._max_outer_cycles = n
+
+    @property
+    def relogin_block_streak(self) -> int:
+        return self._relogin_block_streak
+
+    def set_relogin_block_streak(self, n: int) -> None:
+        if n < 0 or n > 1000:
+            raise ValueError("relogin_block_streak phải trong [0, 1000]")
+        self._relogin_block_streak = n
+
     def apply_settings(self, settings: dict) -> None:
         """Hydrate fields từ settings dict (startup boot)."""
         _hydrate_proxy_pool_from_settings(settings)
@@ -4318,6 +4352,14 @@ class UpiJobManager:
             val = int(settings["upi.proxy_from_step"])
             if 1 <= val <= 6:
                 self._proxy_from_step = val
+        if "upi.max_outer_cycles" in settings:
+            val = int(settings["upi.max_outer_cycles"])
+            if 1 <= val <= 5:
+                self._max_outer_cycles = val
+        if "upi.relogin_block_streak" in settings:
+            val = int(settings["upi.relogin_block_streak"])
+            if 0 <= val <= 1000:
+                self._relogin_block_streak = val
 
     # ── SSE broadcast ───────────────────────────────────────────────────
     def _broadcast(self, event: dict[str, Any]) -> None:
@@ -4859,6 +4901,113 @@ class UpiJobManager:
             self._job_log(job, f"[tg]   send            ✗  {type(exc).__name__}: {exc}")
 
     # ── Run job ─────────────────────────────────────────────────────────
+    async def _run_upi_cycles(
+        self,
+        job: UpiJob,
+        *,
+        leased_proxy: str | None,
+        initial_raw_pool: list[str],
+        qr_out_path: Path,
+        log,
+        auth_sink: dict[str, Any],
+    ) -> UpiQrResult:
+        """Outer re-login loop: chạy ``run_upi_qr_probe`` tối đa ``_max_outer_cycles`` lần.
+
+        Re-login (cycle kế) CHỈ khi cycle vừa rồi fail VÀ MỌI approve attempt
+        đều IP/edge-reject (``cycle_all_blocked``) — lúc đó token + checkout +
+        IP mới mới có ý nghĩa. result.ok hoặc fail-loại-khác (login fail /
+        no-offer / transient/network) → dừng ngay, KHÔNG re-login spam.
+
+        Cycle kế lấy ordering proxy tươi (round_robin advance / random reshuffle)
+        → approve loop khởi đầu không lockstep cùng IP cycle trước. Inner runner
+        (``run_upi_qr_probe``) giữ NGUYÊN: login→checkout→confirm→approve +
+        restart-phase, network-recovery... Không đụng lõi.
+
+        ``max_outer_cycles=1`` → loop chạy đúng 1 lần, hành vi y hệt bản cũ.
+        """
+        max_cycles = self._max_outer_cycles
+        # Block-streak chỉ bật khi có re-login (>1 cycle) — single-cycle giữ
+        # nguyên semantics approve loop (chạy hết approve_retries).
+        block_streak = self._relogin_block_streak if max_cycles > 1 else 0
+        job.cycle_count = 1  # reset đầu run (retry job reuse object — tránh badge cũ)
+        budget = self._job_timeout * max_cycles  # = effective_timeout ở _run_job
+        loop_started = time.monotonic()
+        # Accumulate attempts qua các cycle (tag "cycle") — giữ full history cho
+        # UI debug, KHÔNG đụng lõi run_upi_qr_probe (gộp ở manager).
+        all_confirm: list[dict[str, Any]] = []
+        all_approve: list[dict[str, Any]] = []
+        all_refresh: list[dict[str, Any]] = []
+        result: UpiQrResult | None = None
+        for cycle in range(1, max_cycles + 1):
+            if cycle == 1:
+                raw_pool = initial_raw_pool
+            else:
+                # Budget guard: không start cycle mới nếu thời gian còn < 1 cycle
+                # đầy đủ → tránh wait_for(effective_timeout) cancel giữa chừng
+                # (mất token export/QR của cycle dở).
+                remaining = budget - (time.monotonic() - loop_started)
+                if remaining < self._job_timeout:
+                    self._job_log(
+                        job,
+                        f"[cycle] còn {remaining:.0f}s < {self._job_timeout:.0f}s/cycle "
+                        f"→ dừng, không re-login dở (giữ kết quả cycle {cycle - 1})",
+                    )
+                    break
+                self._job_log(
+                    job,
+                    f"[cycle] re-login {cycle}/{max_cycles} — toàn bộ approve "
+                    f"cycle trước bị IP/edge-reject → token + checkout + IP mới",
+                )
+                # Ordering tươi mỗi cycle: round_robin advance cursor / random
+                # reshuffle → cycle mới spawn IP khác cycle cũ.
+                raw_pool = list(get_proxy_pool().ordered_for_job(first=leased_proxy))
+                # Cooldown phá burst-signature trước khi re-login (RT — anti-detect).
+                await asyncio.sleep(_UPI_INTER_CYCLE_COOLDOWN)
+            # mark_dead key cho network error trong cycle này (raw line đầu).
+            job._active_proxy_line = raw_pool[0] if raw_pool else None
+            result = await run_upi_qr_probe(
+                email=job.email,
+                password=job.password,
+                secret=job.secret,
+                proxy_pool=raw_pool,
+                approve_retries=self._approve_retries,
+                qr_out_path=qr_out_path,
+                log=log,
+                restart_threshold=self._restart_threshold,
+                max_restarts=self._max_restarts,
+                proxy_from_step=self._proxy_from_step,
+                approve_retry_delay=self._approve_retry_delay,
+                relogin_block_streak=block_streak,
+                auth_sink=auth_sink,
+            )
+            job.cycle_count = cycle
+            # Gộp attempts (tag cycle) — multi-cycle giữ full history.
+            for _a in result.confirm_attempts:
+                _a.setdefault("cycle", cycle)
+            for _a in result.approve_attempts:
+                _a.setdefault("cycle", cycle)
+            for _a in result.page_refresh_attempts:
+                _a.setdefault("cycle", cycle)
+            all_confirm.extend(result.confirm_attempts)
+            all_approve.extend(result.approve_attempts)
+            all_refresh.extend(result.page_refresh_attempts)
+            if cycle > 1:
+                self._broadcast_job(job)  # update badge ↻ N/M live
+            # Re-login khi cycle bị break sớm do block-streak HOẶC toàn bộ approve
+            # đều IP/edge-reject. ok / fail-loại-khác (login fail, no-offer,
+            # transient) → dừng.
+            if result.ok or not (
+                result.relogin_requested or cycle_all_blocked(result.approve_attempts)
+            ):
+                break
+        assert result is not None  # loop chạy ≥1 lần (max_cycles clamp [1,5])
+        # Gắn full accumulated history (mọi cycle) lên result cuối → _run_job
+        # gán vào job. Single-cycle: all_* == result.* gốc nên không đổi.
+        result.confirm_attempts = all_confirm
+        result.approve_attempts = all_approve
+        result.page_refresh_attempts = all_refresh
+        return result
+
     async def _run_job(self, job: UpiJob) -> None:
         self._tasks[job.id] = asyncio.current_task()  # type: ignore[arg-type]
         # auth_sink: runner fill {access_token, session_cookies, active_proxy}
@@ -4921,21 +5070,15 @@ class UpiJobManager:
             qr_out_path = _UPI_QR_DIR / f"{job.id}.png"
 
             result: UpiQrResult = await asyncio.wait_for(
-                run_upi_qr_probe(
-                    email=job.email,
-                    password=job.password,
-                    secret=job.secret,
-                    proxy_pool=raw_pool,
-                    approve_retries=self._approve_retries,
+                self._run_upi_cycles(
+                    job,
+                    leased_proxy=leased_proxy,
+                    initial_raw_pool=raw_pool,
                     qr_out_path=qr_out_path,
                     log=log,
-                    restart_threshold=self._restart_threshold,
-                    max_restarts=self._max_restarts,
-                    proxy_from_step=self._proxy_from_step,
-                    approve_retry_delay=self._approve_retry_delay,
                     auth_sink=auth_sink,
                 ),
-                timeout=self._job_timeout,
+                timeout=self._job_timeout * self._max_outer_cycles,
             )
 
             # Apply result vào job state.
@@ -5000,7 +5143,7 @@ class UpiJobManager:
                 await self._notify_telegram(job)
 
         except asyncio.TimeoutError:
-            error_msg = f"timeout {self._job_timeout:.0f}s exceeded"
+            error_msg = f"timeout {self._job_timeout * self._max_outer_cycles:.0f}s exceeded"
             job.status = "error"
             job.error = error_msg
             job.finished_at = time.time()

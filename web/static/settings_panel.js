@@ -63,6 +63,7 @@
     dom.btnTestAll = $("proxy-pool-test-all");
     dom.btnSave = $("proxy-pool-save");
     dom.statusLine = $("proxy-pool-status");
+    dom.loginFlow = $("login-flow-select");
     // Paste modal
     dom.pasteModal = $("proxy-paste-modal");
     dom.pasteTextarea = $("proxy-paste-textarea");
@@ -186,6 +187,7 @@
 
   // ── Load from backend ──────────────────────────────────────────────────
   function load() {
+    loadLoginFlow();
     return api("/api/proxy/pool")
       .then(function (data) {
         state.mode = data.rotation_mode || "round_robin";
@@ -284,6 +286,33 @@
     if (!dom.tgBadge) return;
     dom.tgBadge.textContent = configured ? "đã cấu hình" : "chưa cấu hình";
     dom.tgBadge.className = "badge " + (configured ? "badge-success" : "badge-muted");
+  }
+
+  // ── Login flow (session.login_flow — setting toàn cục) ──────────────────
+  function loadLoginFlow() {
+    if (!dom.loginFlow) return Promise.resolve();
+    return api("/api/settings/session.login_flow")
+      .then(function (data) {
+        dom.loginFlow.value = (data && data.value === "legacy") ? "legacy" : "anti409";
+      })
+      .catch(function () {
+        dom.loginFlow.value = "anti409";  // 404/chưa set → default
+      });
+  }
+
+  function saveLoginFlow() {
+    if (!dom.loginFlow) return;
+    var val = dom.loginFlow.value === "legacy" ? "legacy" : "anti409";
+    api("/api/settings/session.login_flow", {
+      method: "PUT",
+      body: JSON.stringify({ value: val }),
+    })
+      .then(function () {
+        setStatus("Login flow: " + val, "ok");
+      })
+      .catch(function (err) {
+        setStatus("Lưu login flow thất bại: " + err.message, "fail");
+      });
   }
 
   function loadTelegram() {
@@ -406,6 +435,7 @@
 
     if (dom.tgSave) dom.tgSave.addEventListener("click", saveTelegram);
     if (dom.tgTest) dom.tgTest.addEventListener("click", testTelegram);
+    if (dom.loginFlow) dom.loginFlow.addEventListener("change", saveLoginFlow);
 
     dom.modeSelect.addEventListener("change", function () {
       state.mode = dom.modeSelect.value;

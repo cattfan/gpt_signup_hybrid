@@ -25,6 +25,8 @@
     approveRetryDelay: $('upi-approve-retry-delay'),
     restartThreshold: $('upi-restart-threshold'),
     maxRestarts: $('upi-max-restarts'),
+    maxOuterCycles: $('upi-max-outer-cycles'),
+    reloginBlockStreak: $('upi-relogin-block-streak'),
     jobTimeout:    $('upi-job-timeout'),
     proxyFromStep: $('upi-proxy-from-step'),
     notifyToggle:  $('upi-notify-toggle'),
@@ -354,6 +356,10 @@
         ? `<span class="badge upi-countdown-badge" data-exp="${escHtml(String(j.qr_expires_at))}" title="QR hết hạn sau"></span>`
         : '';
       const planBadge = renderPlanBadge(j);
+      // Badge re-login cycle: chỉ hiện khi đã chạy >1 cycle (all-blocked → re-login).
+      const cycleBadge = (j.cycle_count && j.cycle_count > 1)
+        ? `<span class="badge upi-cycle-badge" title="Đã re-login ${escHtml(String(j.cycle_count))} lần (approve bị IP/edge-block)">↻ ${escHtml(String(j.cycle_count))}</span>`
+        : '';
       const errBadge = (j.status === 'error' && j.error)
         ? `<span class="upi-err-inline" title="${escHtml(j.error)}">${escHtml(j.error.slice(0, 60))}</span>`
         : '';
@@ -368,6 +374,7 @@
               ${amountBadge}
               ${countdownBadge}
               ${planBadge}
+              ${cycleBadge}
               ${errBadge}
             </div>
           </div>
@@ -866,6 +873,8 @@
       const maxRestarts = parseInt(dom.maxRestarts.value, 10);
       const jobTimeout = parseInt(dom.jobTimeout.value, 10) || 1800;
       const proxyFromStep = parseInt(dom.proxyFromStep.value, 10) || 3;
+      const maxOuterCycles = parseInt(dom.maxOuterCycles.value, 10) || 1;
+      const reloginBlockStreak = parseInt(dom.reloginBlockStreak.value, 10);
       await api('/api/upi/config', {
         method: 'POST',
         body: JSON.stringify({
@@ -876,6 +885,8 @@
           restart_threshold: isNaN(restartThreshold) ? 1 : restartThreshold,
           max_restarts: isNaN(maxRestarts) ? 500 : maxRestarts,
           proxy_from_step: proxyFromStep,
+          max_outer_cycles: maxOuterCycles,
+          relogin_block_streak: isNaN(reloginBlockStreak) ? 12 : reloginBlockStreak,
         }),
       });
       await api('/api/upi/jobs', {
@@ -1054,6 +1065,37 @@
     }
   });
 
+  dom.maxOuterCycles.addEventListener('change', async () => {
+    let val = parseInt(dom.maxOuterCycles.value, 10);
+    if (isNaN(val) || val < 1) { val = 1; dom.maxOuterCycles.value = '1'; }
+    else if (val > 5) { val = 5; dom.maxOuterCycles.value = '5'; }
+    try {
+      await api('/api/upi/config', {
+        method: 'POST', body: JSON.stringify({ max_outer_cycles: val }),
+      });
+    } catch (err) {
+      console.error(err);
+      await Dialog.alert({ message: 'Không lưu được max_outer_cycles: ' + err.message });
+    }
+  });
+
+  dom.reloginBlockStreak.addEventListener('change', async () => {
+    let val = parseInt(dom.reloginBlockStreak.value, 10);
+    if (isNaN(val) || val < 0) { val = 12; dom.reloginBlockStreak.value = '12'; }
+    else if (val > 1000) { val = 1000; dom.reloginBlockStreak.value = '1000'; }
+    try {
+      await api('/api/upi/config', {
+        method: 'POST', body: JSON.stringify({ relogin_block_streak: val }),
+      });
+    } catch (err) {
+      console.error(err);
+      await Dialog.alert({ message: 'Không lưu được relogin_block_streak: ' + err.message });
+    }
+  });
+
+  // session.login_flow đã chuyển sang tab Settings (settings_panel.js) — setting
+  // toàn cục, không quản ở đây nữa.
+
   dom.notifyToggle.addEventListener('change', async () => {
     const enabled = dom.notifyToggle.checked;
     try {
@@ -1101,6 +1143,9 @@
     }
     if (snap.job_timeout) dom.jobTimeout.value = snap.job_timeout;
     if (snap.proxy_from_step) dom.proxyFromStep.value = String(snap.proxy_from_step);
+    if (typeof snap.max_outer_cycles === 'number') {
+      dom.maxOuterCycles.value = snap.max_outer_cycles;
+    }
 
     // Revoke blob cho job không còn trong snapshot (cleanup khi server clear).
     const incomingIds = new Set(snap.jobs.map((j) => j.id));
@@ -1247,9 +1292,17 @@
     }
     if (cfg.job_timeout) dom.jobTimeout.value = cfg.job_timeout;
     if (cfg.proxy_from_step) dom.proxyFromStep.value = String(cfg.proxy_from_step);
+    if (typeof cfg.max_outer_cycles === 'number') {
+      dom.maxOuterCycles.value = cfg.max_outer_cycles;
+    }
+    if (typeof cfg.relogin_block_streak === 'number') {
+      dom.reloginBlockStreak.value = cfg.relogin_block_streak;
+    }
     state.approveRetries = cfg.approve_retries;
     dom.notifyToggle.checked = !!cfg.notify_enabled;
   }).catch(() => {});
+
+  // session.login_flow load đã chuyển sang settings_panel.js (tab Settings).
 
   // Duration timer cho running jobs + countdown QR
   setInterval(() => {

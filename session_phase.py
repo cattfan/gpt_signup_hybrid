@@ -842,6 +842,29 @@ async def fetch_account_entitlement(
 # ─────────────────────────────────────────────────────────────────────
 
 
+def _resolve_login_flow(explicit: str | None) -> str:
+    """Resolve flow login cho ``get_session_pure_request``.
+
+    Ưu tiên: ``explicit`` (caller truyền) > Settings Store ``session.login_flow``
+    > default ``"anti409"`` (flow dev — warm + pre-set oai-did +
+    auth_session_logging_id + sentinel ``password_verify`` + assume-password,
+    chống HTTP 409 invalid_state). DB chưa mở/lỗi → fallback default, KHÔNG raise.
+
+    ``"legacy"`` = flow cũ (``_step_auth_url`` + authorize/continue fallback +
+    sentinel ``login``) — dò được passwordless/OTP khi landing không rõ.
+    """
+    if explicit in ("legacy", "anti409"):
+        return explicit
+    try:
+        from db import get_engine, get_settings_repo
+        val = get_settings_repo(get_engine()).get("session.login_flow")
+        if val in ("legacy", "anti409"):
+            return val
+    except Exception:  # noqa: BLE001 — DB chưa sẵn sàng → dùng default
+        pass
+    return "anti409"
+
+
 async def get_session_pure_request(
     *,
     email: str,
@@ -849,6 +872,7 @@ async def get_session_pure_request(
     secret: str | None = None,
     proxy: str | None = None,
     mail_provider: Any = None,
+    login_flow: str | None = None,
     log: LogFn = print,
 ) -> dict[str, Any]:
     """Login ChatGPT via pure HTTP requests → return /api/auth/session JSON.
@@ -909,6 +933,8 @@ async def get_session_pure_request(
             loop.close()
 
     def _sync() -> dict[str, Any]:
+        flow_mode = _resolve_login_flow(login_flow)
+        log(f"[session-req] login_flow={flow_mode}")
         # ─────────────────────────────────────────────────────────────
         # Bootstrap helper: CSRF + signin/openai + GET /authorize.
         # `use_login_hint=True` → server có thể auto-redirect thẳng tới
@@ -929,12 +955,98 @@ async def get_session_pure_request(
                     if idx > 0:
                         log(f"[session-req] TLS rotation: retrying with impersonate={imp}")
                     did = str(__import__('uuid').uuid4())
-                    csrf = _step_csrf(sess, log)
-                    au = _step_auth_url(
-                        sess, csrf, log,
-                        device_id=did,
-                        login_hint=email if use_login_hint else "",
-                    )
+                    if flow_mode == "anti409":
+                        # ── Anti-detection (flow dev) ──────────────────────────
+                        # Pre-set oai-did + warm chatgpt.com + signin/openai kèm
+                        # auth_session_logging_id → server thấy device_id/auth
+                        # session consistent ngay từ đầu, tránh /password/verify
+                        # reject "invalid_state". Xem journal 260617-1755.
+                        from urllib.parse import urlencode as _urlencode
+                        try:
+                            sess.cookies.set("oai-did", did, domain="chatgpt.com")
+                        except Exception:
+                            pass
+                        _warm_ua_headers = {
+                            "User-Agent": USER_AGENT,
+                            "sec-ch-ua": _SEC_CH_UA,
+                            "sec-ch-ua-mobile": _SEC_CH_UA_MOBILE,
+                            "sec-ch-ua-platform": _SEC_CH_UA_PLATFORM,
+                            "Accept-Language": "en-US,en;q=0.9",
+                        }
+                        try:
+                            sess.get(
+                                "https://chatgpt.com/",
+                                headers={
+                                    **_warm_ua_headers,
+                                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                                    "Sec-Fetch-Mode": "navigate",
+                                    "Sec-Fetch-Dest": "document",
+                                    "Upgrade-Insecure-Requests": "1",
+                                },
+                                timeout=20,
+                                allow_redirects=True,
+                            )
+                            sess.get(
+                                "https://chatgpt.com/backend-anon/accounts/check/v4-2023-04-27",
+                                params={"timezone_offset_min": -420},
+                                headers={
+                                    **_warm_ua_headers,
+                                    "Accept": "*/*",
+                                    "Referer": "https://chatgpt.com/",
+                                    "oai-device-id": did,
+                                },
+                                timeout=20,
+                            )
+                            sess.get(
+                                "https://chatgpt.com/api/auth/providers",
+                                headers={
+                                    **_warm_ua_headers,
+                                    "Accept": "*/*",
+                                    "Referer": "https://chatgpt.com/",
+                                },
+                                timeout=20,
+                            )
+                        except Exception as _w_exc:
+                            log(f"[session-req] warming non-fatal: {_w_exc}")
+                        # Server có thể re-issue oai-did sau warming → đọc lại làm
+                        # device_id chuẩn (cookie ↔ ext-oai-did query phải MATCH).
+                        did = sess.cookies.get("oai-did", "") or did
+                        csrf = _step_csrf(sess, log)
+                        _au_params = {
+                            "prompt": "login",
+                            "ext-passkey-client-capabilities": "11111",
+                            "ext-oai-did": did,
+                            "auth_session_logging_id": str(__import__('uuid').uuid4()),
+                            "screen_hint": "login_or_signup",
+                        }
+                        if use_login_hint:
+                            _au_params["login_hint"] = email
+                        _au_headers = _common_headers("https://chatgpt.com/auth/login")
+                        _au_headers["Content-Type"] = "application/x-www-form-urlencoded"
+                        _au_resp = sess.post(
+                            "https://chatgpt.com/api/auth/signin/openai?" + _urlencode(_au_params),
+                            headers=_au_headers,
+                            data={
+                                "csrfToken": csrf,
+                                "callbackUrl": "https://chatgpt.com/",
+                                "json": "true",
+                            },
+                            timeout=30,
+                        )
+                        if _au_resp.status_code != 200:
+                            raise SessionError(f"signin/openai failed: HTTP {_au_resp.status_code}")
+                        au = (_au_resp.json() or {}).get("url", "")
+                        if not au:
+                            raise SessionError("signin/openai: no URL in response")
+                        log(f"[session-req] auth URL: {au[:80]}...")
+                    else:
+                        # ── Legacy flow main: dùng _step_auth_url helper ──────
+                        csrf = _step_csrf(sess, log)
+                        au = _step_auth_url(
+                            sess, csrf, log,
+                            device_id=did,
+                            login_hint=email if use_login_hint else "",
+                        )
                     # OAuth init: GET authorize MIMIC top-level navigation của browser
                     # (sec-fetch-* + upgrade-insecure-requests + referer chatgpt.com/).
                     # GET authorize KHÔNG có sec-fetch-mode=navigate sẽ bị xử như
@@ -999,6 +1111,12 @@ async def get_session_pure_request(
                 return "password"
             if "/email-verification" in land_url:
                 return "otp"
+            # MFA challenge ngụ ý đã qua password (cookie còn sống) → branch password.
+            if "/mfa-challenge" in land_url:
+                return "password"
+            # Passkey enrollment → account đã authed, skip passkey lấy callback.
+            if "/login-enroll-passkey" in land_url:
+                return "password"
             return ""
 
         # ─────────────────────────────────────────────────────────────
@@ -1021,6 +1139,18 @@ async def get_session_pure_request(
         # authorize/continue với email khi server đã pre-set login_hint sẽ
         # bị reject vì state đã ở step sau.
         # ─────────────────────────────────────────────────────────────
+        if not flow and flow_mode == "anti409":
+            # anti409: KHÔNG dùng authorize/continue (nguồn HTTP 409 invalid_state).
+            # Input combo luôn có password → assume password; /password/verify tự
+            # reject 4xx rõ ràng nếu state sai (rõ hơn 409). passwordless mà landing
+            # không lộ /email-verification sẽ fail ở đây — dùng flow "legacy" cho mix
+            # account passwordless.
+            log(
+                "[session-req] landing không nhận diện (anti409) — assume password "
+                "+ thử /api/accounts/password/verify trực tiếp"
+            )
+            flow = "password"
+
         if not flow:
             log("[session-req] landing không xác định — re-bootstrap KHÔNG login_hint để gọi authorize/continue clean...")
             try:
@@ -1072,11 +1202,33 @@ async def get_session_pure_request(
             # ── Branch A: password login ──
             if flow == "password":
                 log("[session-req] password login flow...")
+                if flow_mode == "anti409":
+                    # Warm sentinel.openai.com sdk.js + frame.html với Referer
+                    # /log-in/password → server nhận token là từ password verify
+                    # flow (giảm reject token yếu).
+                    try:
+                        session.get(
+                            "https://sentinel.openai.com/backend-api/sentinel/sdk.js",
+                            headers={"Referer": "https://auth.openai.com/log-in/password"},
+                            timeout=15,
+                        )
+                        session.get(
+                            "https://sentinel.openai.com/backend-api/sentinel/frame.html",
+                            params={"sv": "20260219f9f6"},
+                            headers={"Referer": "https://auth.openai.com/log-in/password"},
+                            timeout=15,
+                        )
+                    except Exception as _warm_exc:
+                        log(f"[session-req] sentinel warming non-fatal: {_warm_exc}")
                 headers = _common_headers("https://auth.openai.com/log-in/password")
                 headers["Content-Type"] = "application/json"
                 if device_id:
                     headers["oai-device-id"] = device_id
-                sentinel_pw = _get_sentinel_token(session, device_id, "login", log)
+                # anti409: sentinel flow="password_verify" (reference) — server map
+                # flow → required action; "login" có thể trả token không hợp lệ cho
+                # endpoint password/verify. legacy giữ "login".
+                _sentinel_flow = "password_verify" if flow_mode == "anti409" else "login"
+                sentinel_pw = _get_sentinel_token(session, device_id, _sentinel_flow, log)
                 if sentinel_pw:
                     headers["openai-sentinel-token"] = sentinel_pw
 

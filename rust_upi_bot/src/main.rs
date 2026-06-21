@@ -248,6 +248,8 @@ fn localized_commands(lang: Lang, is_admin: bool) -> Vec<(&'static str, &'static
                 ("unban", "Gỡ cấm user (admin)"),
                 ("banlist", "Danh sách user bị cấm (admin)"),
                 ("board", "Bảng tiến trình realtime (admin)"),
+                ("proxy_login_set", "Đặt login proxy chung (admin)"),
+                ("proxy_login_remove", "Xóa login proxy chung (admin)"),
             ],
             Lang::En => vec![
                 ("notify", "Broadcast to all users (admin)"),
@@ -256,6 +258,8 @@ fn localized_commands(lang: Lang, is_admin: bool) -> Vec<(&'static str, &'static
                 ("unban", "Unban a user (admin)"),
                 ("banlist", "List banned users (admin)"),
                 ("board", "Live process board (admin)"),
+                ("proxy_login_set", "Set shared login proxy (admin)"),
+                ("proxy_login_remove", "Remove shared login proxy (admin)"),
             ],
         };
         v.extend(admin);
@@ -428,6 +432,8 @@ async fn main() -> Result<()> {
             ("unban", "Unban by @username/id (admin)"),
             ("banlist", "List banned users (admin)"),
             ("board", "Live process table (admin)"),
+            ("proxy_login_set", "Set shared login proxy (admin)"),
+            ("proxy_login_remove", "Remove shared login proxy (admin)"),
         ];
         if let Err(e) = tg
             .set_my_commands_for_chat(cli.admin_chat_id, admin_commands)
@@ -691,23 +697,25 @@ async fn handle_message(
                     &username,
                     cli.admin_chat_id,
                     cli.proxy_from_step,
+                    lang,
                 )
                 .await;
                 return Ok(());
             }
             "/proxy_remove" => {
-                handle_proxy_remove(&tg, &store, &msg, user_id).await;
+                handle_proxy_remove(&tg, &store, &msg, user_id, lang).await;
                 return Ok(());
             }
             _ => {}
         }
 
         match cmd_base {
-            "/notify" | "/chat" | "/ban" | "/unban" | "/banlist" | "/board" => {
+            "/notify" | "/chat" | "/ban" | "/unban" | "/banlist" | "/board"
+            | "/proxy_login_set" | "/proxy_login_remove" => {
                 if !is_admin {
                     tg.send_message(
                         msg.chat.id,
-                        "⛔ Admin-only command.",
+                        &i18n::admin_only(lang),
                         Some(msg.message_id),
                     )
                     .await
@@ -722,6 +730,12 @@ async fn handle_message(
                     }
                     "/unban" => handle_unban(&tg, &store, &msg, text).await,
                     "/banlist" => handle_banlist(&tg, &store, &msg).await,
+                    "/proxy_login_set" => {
+                        handle_proxy_login_set(&tg, &store, &msg, text, cli.proxy_from_step).await
+                    }
+                    "/proxy_login_remove" => {
+                        handle_proxy_login_remove(&tg, &store, &msg).await
+                    }
                     "/board" => {
                         handle_board(
                             tg.clone(),
@@ -916,7 +930,9 @@ async fn enqueue_and_track(
         }
     }
 
-    // Per-user proxy override (private, không share sang user khác).
+    // ── Proxy resolution: login proxy (admin, global) + user proxy (private) ──
+    let masked_email = upi::runner::mask_email(&email);
+    let login_proxy_raw = store.get_login_proxy();
     let user_proxy_raw = match store.get_user_proxy(user_id) {
         Ok(v) => v,
         Err(e) => {
@@ -924,8 +940,25 @@ async fn enqueue_and_track(
             None
         }
     };
+
+    // Login proxy materialize 1 lần (segment login: step < proxy_from_step).
+    let login_proxy_url: Option<String> = match login_proxy_raw.as_deref() {
+        Some(raw) => match proxy_format::materialize_for_client(raw, 8) {
+            Ok(url) => Some(url),
+            Err(e) => {
+                tracing::warn!(user_id, "login proxy materialize fail: {}", e);
+                None
+            }
+        },
+        None => None,
+    };
+
+    // effective_pool = segment "work" (từ proxy_from_step trở đi):
+    //   - user có proxy riêng        → [user_proxy]   (login proxy chỉ ở segment login)
+    //   - user KHÔNG có, có login px  → [login_proxy]  (login proxy phủ toàn flow)
+    //   - không có cả 2              → pool global (hành vi cũ / DIRECT)
     let effective_pool: Vec<String> = match user_proxy_raw.as_deref() {
-        Some(raw) => match proxy_format::materialize_proxy(raw, 8) {
+        Some(raw) => match proxy_format::materialize_for_client(raw, 8) {
             Ok(url) => {
                 tracing::info!(
                     user_id,
@@ -935,12 +968,84 @@ async fn enqueue_and_track(
                 vec![url]
             }
             Err(e) => {
-                tracing::warn!(user_id, "user proxy materialize fail: {} — fallback global pool", e);
-                proxy_pool.to_vec()
+                tracing::warn!(user_id, "user proxy materialize fail: {} — fallback", e);
+                login_proxy_url
+                    .clone()
+                    .map(|u| vec![u])
+                    .unwrap_or_else(|| proxy_pool.to_vec())
             }
         },
-        None => proxy_pool.to_vec(),
+        None => match &login_proxy_url {
+            Some(u) => vec![u.clone()],
+            None => proxy_pool.to_vec(),
+        },
     };
+
+    // ── Pre-flight proxy check (cache 5'); fail-fast nếu proxy chết ──────
+    // Chỉ probe proxy do feature này quản lý (login proxy + user proxy raw);
+    // pool global thuần (env) giữ hành vi cũ, không pre-flight.
+    let probe_login_raw = login_proxy_raw.clone().filter(|_| login_proxy_url.is_some());
+    let probe_user_raw = user_proxy_raw.clone();
+    let (login_status, user_status) = tokio::join!(
+        async {
+            match &probe_login_raw {
+                Some(r) => Some(bot::proxy_status::PROXY_STATUS.get_or_probe(r).await),
+                None => None,
+            }
+        },
+        async {
+            match &probe_user_raw {
+                Some(r) => Some(bot::proxy_status::PROXY_STATUS.get_or_probe(r).await),
+                None => None,
+            }
+        },
+    );
+
+    let mut proxy_lines: Vec<String> = Vec::new();
+    let mut proxy_dead = false;
+    if let Some(st) = &login_status {
+        proxy_lines.push(build_proxy_line(lang, "Login", st));
+        if !st.ok {
+            proxy_dead = true;
+        }
+    }
+    if let Some(st) = &user_status {
+        proxy_lines.push(build_proxy_line(lang, "User", st));
+        if !st.ok {
+            proxy_dead = true;
+        }
+    }
+    if proxy_dead {
+        // Chưa register job, chưa mark_in_flight → chỉ báo user (và admin) rồi
+        // dừng. Không tốn slot/worker.
+        tg.send_message(
+            chat_id,
+            &bot::proc_view::render_preflight_blocked(lang, &masked_email, &proxy_lines),
+            Some(reply_to),
+        )
+        .await
+        .ok();
+        if cli.admin_chat_id != 0 && user_id != cli.admin_chat_id {
+            let note = format!(
+                "⛔ Job bị chặn (proxy chết)\nTừ: @{} (id {})\nEmail: {}\n{}",
+                username.as_deref().unwrap_or("-"),
+                user_id,
+                masked_email,
+                proxy_lines.join("\n"),
+            );
+            tg.send_message(cli.admin_chat_id, &note, None).await.ok();
+        }
+        return Ok(());
+    }
+    if !proxy_lines.is_empty() {
+        tg.send_message(
+            chat_id,
+            &bot::proc_view::render_preflight_ok(lang, &masked_email, &proxy_lines),
+            None,
+        )
+        .await
+        .ok();
+    }
 
     // Đăng ký job TRƯỚC để có job_id (u64) gắn vào nút Stop của tin.
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<JobEvent>();
@@ -948,7 +1053,6 @@ async fn enqueue_and_track(
     let qr_path = cli
         .qr_out_dir
         .join(format!("qr_{}_{}.png", user_id, job_id));
-    let masked_email = upi::runner::mask_email(&email);
 
     // Nhãn nguồn auth (để báo admin) — lấy trước khi move vào job_config.
     let auth_kind = match &auth {
@@ -960,6 +1064,7 @@ async fn enqueue_and_track(
         email: email.clone(),
         auth,
         proxy_pool: effective_pool,
+        login_proxy: login_proxy_url,
         approve_retries: cli.approve_retries,
         restart_threshold: cli.restart_threshold,
         max_restarts: cli.max_restarts,
@@ -1142,6 +1247,20 @@ async fn enqueue_and_track(
                                     {
                                         tracing::warn!("sendPhoto fail: {}", e);
                                     }
+                                }
+                            }
+                            // Gửi link thanh toán ở 1 tin nhắn MỚI (không sửa tin cũ).
+                            // return_url dạng https://checkout.stripe.com/c/pay/{cs_...};
+                            // đổi host → pay.openai.com cho khớp convention payment_link.py.
+                            if result.ok && result.return_url.contains("/c/pay/") {
+                                let pay_url = result
+                                    .return_url
+                                    .replace("checkout.stripe.com", "pay.openai.com");
+                                let pay_msg = i18n::payment_link_msg(lang, &pay_url);
+                                if let Err(e) =
+                                    tg_for_log.send_message(chat_id, &pay_msg, None).await
+                                {
+                                    tracing::warn!("send payment link fail: {}", e);
                                 }
                             }
                             // Notify admin khi user KHÁC tạo QR thành công.
@@ -1594,6 +1713,7 @@ async fn run_once(
         email,
         auth,
         proxy_pool: proxy_pool.to_vec(),
+        login_proxy: None,
         approve_retries: cli.approve_retries,
         restart_threshold: cli.restart_threshold,
         max_restarts: cli.max_restarts,
@@ -1662,7 +1782,8 @@ async fn send_welcome(tg: &Arc<TelegramClient>, chat_id: i64, reply_to: i64, lan
             {"text": i18n::btn_help(lang), "callback_data": "cmd:help"}
         ],
         [
-            {"text": "💬 @prr9293", "url": "https://t.me/prr9293"}
+            {"text": "💬 Contact", "url": "https://t.me/prr9293"},
+            {"text": "👥 Join Group", "url": "https://t.me/+QOsyt6bh5341YWM9"}
         ]
     ]);
     if let Err(e) = tg.send_message_kb(chat_id, &info, Some(reply_to), kb).await {
@@ -1683,10 +1804,11 @@ async fn handle_callback(
 ) -> Result<()> {
     let user_id = cb.from.id;
     let is_admin = admin_chat_id != 0 && user_id == admin_chat_id;
+    let lang = lang_or_default(&store, user_id);
 
     if !is_admin {
         if let Ok(true) = store.is_banned(user_id) {
-            tg.answer_callback_query(&cb.id, Some("You are blocked"))
+            tg.answer_callback_query(&cb.id, Some(&i18n::toast_blocked(lang)))
                 .await
                 .ok();
             return Ok(());
@@ -1694,7 +1816,7 @@ async fn handle_callback(
     }
 
     if !allowed.is_empty() && !allowed.contains(&user_id) {
-        tg.answer_callback_query(&cb.id, Some("Not whitelisted"))
+        tg.answer_callback_query(&cb.id, Some(&i18n::toast_not_whitelisted(lang)))
             .await
             .ok();
         return Ok(());
@@ -1702,7 +1824,6 @@ async fn handle_callback(
 
     let chat_id = cb.message.as_ref().map(|m| m.chat.id).unwrap_or(0);
     let data = cb.data.clone().unwrap_or_default();
-    let lang = lang_or_default(&store, user_id);
 
     // Chọn ngôn ngữ (có thể xảy ra trước khi user có lang).
     if let Some(code) = data.strip_prefix("setlang:") {
@@ -1766,44 +1887,44 @@ async fn handle_callback(
         "proxy:check" => {
             // Probe live status proxy của chính user — không cho user khác
             // probe proxy của ai khác.
-            tg.answer_callback_query(&cb.id, Some("Probing...")).await.ok();
+            tg.answer_callback_query(&cb.id, Some(&i18n::toast_probing(lang))).await.ok();
             let raw = match store.get_user_proxy(user_id) {
                 Ok(Some(r)) => r,
                 Ok(None) => {
-                    tg.send_message(chat_id, "ℹ️ You haven't set a proxy yet.", None).await.ok();
+                    tg.send_message(chat_id, &i18n::proxy_not_set(lang), None).await.ok();
                     return Ok(());
                 }
                 Err(e) => {
-                    tg.send_message(chat_id, &format!("❌ DB error: {}", e), None).await.ok();
+                    tg.send_message(chat_id, &i18n::db_error(lang, &e.to_string()), None).await.ok();
                     return Ok(());
                 }
             };
-            let result = bot::proxy_probe::probe_proxy_line(&raw).await;
-            let body = render_probe_result(&raw, &result);
-            tg.send_message_kb(chat_id, &body, None, proxy_keyboard())
+            let result = bot::proxy_status::PROXY_STATUS.refresh(&raw).await;
+            let body = render_probe_result(lang, &raw, &result);
+            tg.send_message_kb(chat_id, &body, None, proxy_keyboard(lang))
                 .await
                 .ok();
         }
         "proxy:remove" => {
             match store.remove_user_proxy(user_id) {
                 Ok(true) => {
-                    tg.answer_callback_query(&cb.id, Some("Removed")).await.ok();
-                    tg.send_message(chat_id, "🧹 Your proxy has been removed. Your next job will run DIRECT (or use the admin's global pool).", None)
+                    tg.answer_callback_query(&cb.id, Some(&i18n::toast_removed(lang))).await.ok();
+                    tg.send_message(chat_id, &i18n::proxy_removed_direct(lang), None)
                         .await
                         .ok();
                 }
                 Ok(false) => {
-                    tg.answer_callback_query(&cb.id, Some("Nothing to remove")).await.ok();
-                    tg.send_message(chat_id, "ℹ️ You haven't set a proxy yet.", None).await.ok();
+                    tg.answer_callback_query(&cb.id, Some(&i18n::toast_nothing_to_remove(lang))).await.ok();
+                    tg.send_message(chat_id, &i18n::proxy_not_set(lang), None).await.ok();
                 }
                 Err(e) => {
-                    tg.answer_callback_query(&cb.id, Some("DB error")).await.ok();
-                    tg.send_message(chat_id, &format!("❌ Remove failed: {}", e), None).await.ok();
+                    tg.answer_callback_query(&cb.id, Some(&i18n::toast_db_error(lang))).await.ok();
+                    tg.send_message(chat_id, &i18n::proxy_remove_failed(lang, &e.to_string()), None).await.ok();
                 }
             }
         }
         _ => {
-            tg.answer_callback_query(&cb.id, Some("Unknown action"))
+            tg.answer_callback_query(&cb.id, Some(&i18n::toast_unknown_action(lang)))
                 .await
                 .ok();
         }
@@ -2316,49 +2437,56 @@ async fn handle_banlist(
 
 /// Inline keyboard cho thao tác proxy (check live + remove). Dùng chung cho
 /// `/proxy_set` (sau khi save) và callback `proxy:check` (sau khi probe xong).
-fn proxy_keyboard() -> Value {
+fn proxy_keyboard(lang: Lang) -> Value {
     serde_json::json!([
         [
-            {"text": "🔍 Check live status", "callback_data": "proxy:check"},
-            {"text": "🗑 Remove proxy", "callback_data": "proxy:remove"},
+            {"text": i18n::btn_proxy_check(lang), "callback_data": "proxy:check"},
+            {"text": i18n::btn_proxy_remove(lang), "callback_data": "proxy:remove"},
         ]
     ])
 }
 
-/// Render probe result thành text Telegram. Mask credential mọi chỗ.
-fn render_probe_result(raw_line: &str, r: &bot::proxy_probe::ProbeResult) -> String {
+/// Render probe result thành text Telegram (song ngữ). Mask credential mọi chỗ.
+fn render_probe_result(lang: Lang, raw_line: &str, r: &bot::proxy_probe::ProbeResult) -> String {
+    let status = proxy_status_text(r);
+    let detail_value = if r.ok {
+        r.detail.clone()
+    } else {
+        // Sanitize detail trước khi hiển thị để không leak creds materialized.
+        proxy_format::sanitize_proxy_text(&r.detail)
+    };
+    let detail_line = i18n::proxy_probe_detail(lang, r.ok, &detail_value);
+    i18n::proxy_probe_card(
+        lang,
+        r.ok,
+        status,
+        &proxy_format::mask_proxy(raw_line),
+        r.latency_ms,
+        &detail_line,
+        bot::proxy_probe::PROBE_ENDPOINT,
+    )
+}
+
+/// Map ProbeResult → nhãn trạng thái ngắn (dùng chung probe card + pre-flight).
+fn proxy_status_text(r: &bot::proxy_probe::ProbeResult) -> &'static str {
     use bot::proxy_probe::ProbeReason;
-    let icon = if r.ok { "✅" } else { "❌" };
-    let status = match (&r.reason, r.ok) {
+    match (&r.reason, r.ok) {
         (ProbeReason::Ok, true) => "ALIVE",
         (ProbeReason::Auth, _) => "AUTH FAIL",
         (ProbeReason::Ip, _) => "IP-LEVEL FAIL",
         (ProbeReason::BadFormat, _) => "BAD FORMAT",
         _ => "UNKNOWN",
-    };
-    let mut s = format!(
-        "{} Proxy probe: {}\n\
-         Line: {}\n\
-         Latency: {} ms\n",
-        icon,
-        status,
-        proxy_format::mask_proxy(raw_line),
-        r.latency_ms,
-    );
-    if r.ok {
-        s.push_str(&format!("Exit IP: {}\n", r.detail));
-    } else {
-        // Sanitize detail trước khi log để không leak creds materialized
-        s.push_str(&format!(
-            "Detail: {}\n",
-            proxy_format::sanitize_proxy_text(&r.detail)
-        ));
     }
-    s.push_str(&format!(
-        "Endpoint: {}\n",
-        bot::proxy_probe::PROBE_ENDPOINT
-    ));
-    s
+}
+
+/// 1 dòng trạng thái proxy cho pre-flight card (mask + sanitize detail).
+fn build_proxy_line(lang: Lang, label: &str, r: &bot::proxy_probe::ProbeResult) -> String {
+    let detail = if r.ok {
+        r.detail.clone()
+    } else {
+        proxy_format::sanitize_proxy_text(&r.detail)
+    };
+    bot::proc_view::render_proxy_line(lang, label, r.ok, proxy_status_text(r), &detail, r.latency_ms)
 }
 
 /// `/proxy_set <line>` — set proxy private cho user. Không có arg → show
@@ -2379,41 +2507,27 @@ async fn handle_proxy_set(
     username: &Option<String>,
     admin_chat_id: i64,
     proxy_from_step: u32,
+    lang: Lang,
 ) {
     let body_opt = command_body(text);
     if body_opt.is_none() {
         // No arg → show trạng thái hiện tại + keyboard nếu đã có proxy
         match store.get_user_proxy(user_id) {
             Ok(Some(raw)) => {
-                let body = format!(
-                    "🌐 Your proxy:\n{}\n\nUse the buttons below to check live status or remove it.\n\
-                     To change proxy: /proxy_set <line>",
-                    proxy_format::mask_proxy(&raw),
-                );
-                tg.send_message_kb(msg.chat.id, &body, Some(msg.message_id), proxy_keyboard())
+                let body = i18n::proxy_show_current(lang, &proxy_format::mask_proxy(&raw));
+                tg.send_message_kb(msg.chat.id, &body, Some(msg.message_id), proxy_keyboard(lang))
                     .await
                     .ok();
             }
             Ok(None) => {
-                tg.send_message(
-                    msg.chat.id,
-                    "ℹ️ You haven't set a proxy yet.\n\n\
-                     Usage:\n\
-                     /proxy_set host:port\n\
-                     /proxy_set host:port:user:pass\n\
-                     /proxy_set http://user:pass@host:port\n\
-                     /proxy_set socks5://user:pass@host:1080\n\n\
-                     Supports {SID} placeholder for sticky sessions:\n\
-                     /proxy_set host:port:user-{SID}:pass",
-                    Some(msg.message_id),
-                )
-                .await
-                .ok();
+                tg.send_message(msg.chat.id, &i18n::proxy_set_usage(lang), Some(msg.message_id))
+                    .await
+                    .ok();
             }
             Err(e) => {
                 tg.send_message(
                     msg.chat.id,
-                    &format!("❌ DB error: {}", e),
+                    &i18n::db_error(lang, &e.to_string()),
                     Some(msg.message_id),
                 )
                 .await
@@ -2427,7 +2541,7 @@ async fn handle_proxy_set(
     // Lấy token đầu tiên — không cho whitespace lọt vào DB.
     let raw_line = arg.split_whitespace().next().unwrap_or("");
     if raw_line.is_empty() {
-        tg.send_message(msg.chat.id, "❌ Empty proxy line.", Some(msg.message_id))
+        tg.send_message(msg.chat.id, &i18n::proxy_empty_line(lang), Some(msg.message_id))
             .await
             .ok();
         return;
@@ -2437,14 +2551,7 @@ async fn handle_proxy_set(
     if let Err(e) = proxy_format::validate_and_mask(raw_line) {
         tg.send_message(
             msg.chat.id,
-            &format!(
-                "❌ Invalid proxy format: {}\n\n\
-                 Supported:\n\
-                 • host:port\n\
-                 • host:port:user:pass\n\
-                 • scheme://user:pass@host:port",
-                e
-            ),
+            &i18n::proxy_invalid_format(lang, &e.to_string()),
             Some(msg.message_id),
         )
         .await
@@ -2455,7 +2562,7 @@ async fn handle_proxy_set(
     if let Err(e) = store.set_user_proxy(user_id, raw_line) {
         tg.send_message(
             msg.chat.id,
-            &format!("❌ Save failed: {}", e),
+            &i18n::proxy_save_failed(lang, &e.to_string()),
             Some(msg.message_id),
         )
         .await
@@ -2464,13 +2571,8 @@ async fn handle_proxy_set(
     }
 
     let masked = proxy_format::mask_proxy(raw_line);
-    let body = format!(
-        "✅ Your private proxy has been set.\n{}\n\n\
-         Your next job will use this proxy (overrides the global pool from step {} onward).\n\
-         Use the buttons below to check live status or remove it.",
-        masked, proxy_from_step,
-    );
-    tg.send_message_kb(msg.chat.id, &body, Some(msg.message_id), proxy_keyboard())
+    let body = i18n::proxy_set_ok(lang, &masked, proxy_from_step);
+    tg.send_message_kb(msg.chat.id, &body, Some(msg.message_id), proxy_keyboard(lang))
         .await
         .ok();
 
@@ -2497,12 +2599,13 @@ async fn handle_proxy_remove(
     store: &Arc<settings::Settings>,
     msg: &Message,
     user_id: i64,
+    lang: Lang,
 ) {
     match store.remove_user_proxy(user_id) {
         Ok(true) => {
             tg.send_message(
                 msg.chat.id,
-                "🧹 Your proxy has been removed. Your next job will use the admin's global pool (or DIRECT).",
+                &i18n::proxy_removed_global(lang),
                 Some(msg.message_id),
             )
             .await
@@ -2511,7 +2614,136 @@ async fn handle_proxy_remove(
         Ok(false) => {
             tg.send_message(
                 msg.chat.id,
-                "ℹ️ You don't have a proxy set to remove.",
+                &i18n::proxy_none_to_remove(lang),
+                Some(msg.message_id),
+            )
+            .await
+            .ok();
+        }
+        Err(e) => {
+            tg.send_message(
+                msg.chat.id,
+                &i18n::proxy_remove_failed(lang, &e.to_string()),
+                Some(msg.message_id),
+            )
+            .await
+            .ok();
+        }
+    }
+}
+
+/// `/proxy_login_set <line>` — ADMIN set login proxy global. Áp cho mọi step
+/// TRƯỚC `proxy_from_step` (gồm login HTTP) của TẤT CẢ user. Validate + probe
+/// tươi (bypass cache) để admin verify ngay.
+async fn handle_proxy_login_set(
+    tg: &Arc<TelegramClient>,
+    store: &Arc<settings::Settings>,
+    msg: &Message,
+    text: &str,
+    proxy_from_step: u32,
+) {
+    let body_opt = command_body(text);
+    if body_opt.is_none() {
+        // Không arg → show login proxy hiện tại.
+        match store.get_login_proxy() {
+            Some(raw) => {
+                tg.send_message(
+                    msg.chat.id,
+                    &format!(
+                        "🌐 Login proxy hiện tại:\n{}\n\nÁp cho step 1..{} (login). Đổi: /proxy_login_set <line> · Xóa: /proxy_login_remove",
+                        proxy_format::mask_proxy(&raw),
+                        proxy_from_step.saturating_sub(1).max(1),
+                    ),
+                    Some(msg.message_id),
+                )
+                .await
+                .ok();
+            }
+            None => {
+                tg.send_message(
+                    msg.chat.id,
+                    "ℹ️ Chưa set login proxy.\n\nUsage:\n\
+                     /proxy_login_set host:port\n\
+                     /proxy_login_set host:port:user:pass\n\
+                     /proxy_login_set http://user:pass@host:port\n\
+                     /proxy_login_set socks5://user:pass@host:1080\n\n\
+                     Hỗ trợ {SID} cho sticky session.",
+                    Some(msg.message_id),
+                )
+                .await
+                .ok();
+            }
+        }
+        return;
+    }
+
+    let (arg, _) = body_opt.unwrap();
+    let raw_line = arg.split_whitespace().next().unwrap_or("");
+    if raw_line.is_empty() {
+        tg.send_message(msg.chat.id, "❌ Empty proxy line.", Some(msg.message_id))
+            .await
+            .ok();
+        return;
+    }
+
+    if let Err(e) = proxy_format::validate_and_mask(raw_line) {
+        tg.send_message(
+            msg.chat.id,
+            &format!("❌ Invalid proxy format: {}", e),
+            Some(msg.message_id),
+        )
+        .await
+        .ok();
+        return;
+    }
+
+    if let Err(e) = store.set_login_proxy(raw_line) {
+        tg.send_message(
+            msg.chat.id,
+            &format!("❌ Save failed: {}", e),
+            Some(msg.message_id),
+        )
+        .await
+        .ok();
+        return;
+    }
+
+    // Probe tươi (bypass cache) để verify ngay sau khi set.
+    let result = bot::proxy_status::PROXY_STATUS.refresh(raw_line).await;
+    let admin_lang = lang_or_default(store, msg.from.as_ref().map(|u| u.id).unwrap_or(0));
+    let probe = render_probe_result(admin_lang, raw_line, &result);
+    let body = format!(
+        "✅ Login proxy đã set (áp cho step 1..{} của mọi user).\n{}\n\n{}",
+        proxy_from_step.saturating_sub(1).max(1),
+        proxy_format::mask_proxy(raw_line),
+        probe,
+    );
+    tg.send_message(msg.chat.id, &body, Some(msg.message_id))
+        .await
+        .ok();
+}
+
+/// `/proxy_login_remove` — ADMIN xóa login proxy global. Sau đó segment login
+/// chạy DIRECT (hoặc pool global env nếu user không có proxy riêng).
+async fn handle_proxy_login_remove(
+    tg: &Arc<TelegramClient>,
+    store: &Arc<settings::Settings>,
+    msg: &Message,
+) {
+    match store.remove_login_proxy() {
+        Ok(true) => {
+            tg.send_message(
+                msg.chat.id,
+                "🧹 Đã xóa login proxy. Segment login giờ chạy DIRECT (hoặc pool global env).",
+                Some(msg.message_id),
+            )
+            .await
+            .ok();
+        }
+        Ok(false) => {
+            tg.send_message(
+                msg.chat.id,
+                "ℹ️ Chưa có login proxy để xóa.",
                 Some(msg.message_id),
             )
             .await
@@ -2578,7 +2810,9 @@ async fn send_help(
              /ban <@user | id> [lý do] — cấm theo user_id\n\
              /unban <@user | id> — gỡ cấm\n\
              /banlist — danh sách user bị cấm\n\
-             /board — bảng tiến trình realtime\n"
+             /board — bảng tiến trình realtime\n\
+             /proxy_login_set <line> — đặt login proxy chung (áp segment login mọi user)\n\
+             /proxy_login_remove — xóa login proxy chung\n"
         } else {
             "\nAdmin:\n\
              /notify <message> — broadcast to all users (keeps formatting)\n\
@@ -2586,7 +2820,9 @@ async fn send_help(
              /ban <@user | id> [reason] — ban by user_id\n\
              /unban <@user | id> — unban\n\
              /banlist — list banned users\n\
-             /board — live process table\n"
+             /board — live process table\n\
+             /proxy_login_set <line> — set shared login proxy (login segment for all users)\n\
+             /proxy_login_remove — remove shared login proxy\n"
         });
     }
     help.push_str(if vi {

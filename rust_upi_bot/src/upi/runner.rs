@@ -59,6 +59,10 @@ pub struct UpiJobConfig {
     pub email: String,
     pub auth: AuthSource,
     pub proxy_pool: Vec<String>,
+    /// Login proxy (admin-set) đã materialize cho client. Áp cho mọi step
+    /// TRƯỚC `proxy_from_step` (gồm login HTTP). None → các step đó DIRECT
+    /// (giữ hành vi cũ khi admin chưa cấu hình login proxy).
+    pub login_proxy: Option<String>,
     pub approve_retries: u32,
     pub restart_threshold: u32,
     pub max_restarts: u32,
@@ -89,15 +93,20 @@ pub fn mask_proxy(proxy: &str) -> String {
     crate::proxy_format::mask_proxy(proxy)
 }
 
+/// Proxy cho step không-retry (2,3,4,5 + QR).
+///   - step `>= from_step`        → proxy đầu pool (user proxy, hoặc login
+///                                   proxy ở TH user không có proxy riêng).
+///   - step `<  from_step`        → login proxy (None = DIRECT, giữ hành vi cũ).
 fn proxy_for_step<'a>(
     proxy_pool: &'a [String],
+    login_proxy: Option<&'a str>,
     from_step: u32,
     step: u32,
 ) -> Option<&'a str> {
-    if step >= from_step && !proxy_pool.is_empty() {
-        Some(proxy_pool[0].as_str())
+    if step >= from_step {
+        proxy_pool.first().map(|s| s.as_str())
     } else {
-        None
+        login_proxy
     }
 }
 
@@ -231,9 +240,14 @@ pub async fn run_upi_qr(
             password,
             totp_secret,
         } => {
-            // Login dùng proxy đầu pool nếu có (IP residential giúp qua
-            // Cloudflare tốt hơn router IP), bất kể proxy_from_step.
-            let login_proxy = cfg.proxy_pool.first().map(|s| s.as_str());
+            // Login dùng login proxy (admin-set) nếu có. Nếu chưa cấu hình →
+            // fallback proxy đầu pool (hành vi cũ: residential IP qua Cloudflare
+            // tốt hơn router IP). KHÔNG dùng user proxy cho login khi đã có
+            // login proxy riêng (tách IP login vs IP flow).
+            let login_proxy = cfg
+                .login_proxy
+                .as_deref()
+                .or_else(|| cfg.proxy_pool.first().map(|s| s.as_str()));
             log(&format!(
                 "[1/6] login   →    HTTP login (email|pass|2fa) proxy={}",
                 login_proxy.map(mask_proxy).unwrap_or_else(|| "direct".into())
@@ -270,6 +284,9 @@ pub async fn run_upi_qr(
         cookie_header,
     };
 
+    // Login proxy ref cho các step TRƯỚC proxy_from_step (segment login).
+    let login_proxy_ref = cfg.login_proxy.as_deref();
+
     let stripe_js_id = uuid::Uuid::new_v4().to_string();
     let profile = random_india_profile();
     let bundle_cache = BundleCache::new(cfg.bundles_cache_dir.clone());
@@ -283,6 +300,7 @@ pub async fn run_upi_qr(
     let mut amount: i64 = 0;
     let mut return_url = String::new();
     let mut session_id = String::new();
+    #[allow(unused_assignments)]
     let mut publishable_key = String::new();
     let mut approved = false;
     let mut final_confirmed = false;
@@ -330,7 +348,7 @@ pub async fn run_upi_qr(
             match create_chatgpt_checkout(
                 &client,
                 &auth,
-                proxy_for_step(&cfg.proxy_pool, cfg.proxy_from_step, 2),
+                proxy_for_step(&cfg.proxy_pool, login_proxy_ref, cfg.proxy_from_step, 2),
             )
             .await
             {
@@ -399,7 +417,7 @@ pub async fn run_upi_qr(
             &session_id,
             &publishable_key,
             &stripe_js_id,
-            proxy_for_step(&cfg.proxy_pool, cfg.proxy_from_step, 3),
+            proxy_for_step(&cfg.proxy_pool, login_proxy_ref, cfg.proxy_from_step, 3),
         )
         .await
         {
@@ -456,7 +474,7 @@ pub async fn run_upi_qr(
             &publishable_key,
             &stripe_js_id,
             amount,
-            proxy_for_step(&cfg.proxy_pool, cfg.proxy_from_step, 4),
+            proxy_for_step(&cfg.proxy_pool, login_proxy_ref, cfg.proxy_from_step, 4),
         )
         .await
         {
@@ -506,7 +524,7 @@ pub async fn run_upi_qr(
         let mut phase_confirmed = false;
         let mut confirm_variant_used: Option<String> = None;
         for variant in CONFIRM_VARIANTS {
-            let proxy = proxy_for_step(&cfg.proxy_pool, cfg.proxy_from_step, 5);
+            let proxy = proxy_for_step(&cfg.proxy_pool, login_proxy_ref, cfg.proxy_from_step, 5);
             let attempt = match stripe_confirm_upi_qr(
                 &client,
                 &session_id,
@@ -582,7 +600,7 @@ pub async fn run_upi_qr(
             &publishable_key,
             &stripe_js_id,
             &elements_data,
-            proxy_for_step(&cfg.proxy_pool, cfg.proxy_from_step, 5),
+            proxy_for_step(&cfg.proxy_pool, login_proxy_ref, cfg.proxy_from_step, 5),
         )
         .await
         {
@@ -795,7 +813,7 @@ pub async fn run_upi_qr(
                 &publishable_key,
                 &stripe_js_id,
                 &elements_data,
-                proxy_for_step(&cfg.proxy_pool, cfg.proxy_from_step, 5),
+                proxy_for_step(&cfg.proxy_pool, login_proxy_ref, cfg.proxy_from_step, 5),
             )
             .await
             {
@@ -873,7 +891,7 @@ pub async fn run_upi_qr(
             &client,
             url,
             &target,
-            proxy_for_step(&cfg.proxy_pool, cfg.proxy_from_step, 5),
+            proxy_for_step(&cfg.proxy_pool, login_proxy_ref, cfg.proxy_from_step, 5),
             watermark,
         )
         .await

@@ -3,7 +3,9 @@
 //! Single source of truth cho UA + sec-ch-ua headers. Đồng bộ với Phase
 //! Python để Stripe/ChatGPT thấy cùng device persona.
 
+#[allow(dead_code)]
 pub const CHROME_MAJOR: &str = "145";
+#[allow(dead_code)]
 pub const CHROME_FULL: &str = "145.0.0.0";
 
 pub const WINDOWS_USER_AGENT: &str = concat!(
@@ -17,4 +19,5 @@ pub const SEC_CH_UA: &str =
 
 pub const SEC_CH_UA_MOBILE: &str = "?0";
 pub const SEC_CH_UA_PLATFORM: &str = r#""Windows""#;
+#[allow(dead_code)]
 pub const SEC_CH_UA_PLATFORM_VERSION: &str = r#""15.0.0""#;

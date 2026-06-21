@@ -1693,6 +1693,8 @@ class SetUpiConfigRequest(BaseModel):
     restart_threshold: int | None = Field(default=None, ge=0, le=1000)
     max_restarts: int | None = Field(default=None, ge=0, le=2000)
     proxy_from_step: int | None = Field(default=None, ge=1, le=6)
+    max_outer_cycles: int | None = Field(default=None, ge=1, le=5)
+    relogin_block_streak: int | None = Field(default=None, ge=0, le=1000)
 
 
 class SetTelegramConfigRequest(BaseModel):
@@ -1866,6 +1868,8 @@ async def get_upi_config() -> JSONResponse:
         "restart_threshold": um.restart_threshold,
         "max_restarts": um.max_restarts,
         "proxy_from_step": um.proxy_from_step,
+        "max_outer_cycles": um.max_outer_cycles,
+        "relogin_block_streak": um.relogin_block_streak,
         "notify_enabled": get_telegram_notifier().enabled,
     })
 
@@ -1920,6 +1924,18 @@ async def set_upi_config(payload: SetUpiConfigRequest) -> JSONResponse:
             settings_writes["upi.proxy_from_step"] = payload.proxy_from_step
         except ValueError as exc:
             raise HTTPException(400, str(exc))
+    if payload.max_outer_cycles is not None:
+        try:
+            um.set_max_outer_cycles(payload.max_outer_cycles)
+            settings_writes["upi.max_outer_cycles"] = payload.max_outer_cycles
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+    if payload.relogin_block_streak is not None:
+        try:
+            um.set_relogin_block_streak(payload.relogin_block_streak)
+            settings_writes["upi.relogin_block_streak"] = payload.relogin_block_streak
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
     if payload.notify_enabled is not None:
         get_telegram_notifier().set_enabled(payload.notify_enabled)
         settings_writes["upi.notify_enabled"] = payload.notify_enabled
@@ -1938,6 +1954,8 @@ async def set_upi_config(payload: SetUpiConfigRequest) -> JSONResponse:
         "restart_threshold": um.restart_threshold,
         "max_restarts": um.max_restarts,
         "proxy_from_step": um.proxy_from_step,
+        "max_outer_cycles": um.max_outer_cycles,
+        "relogin_block_streak": um.relogin_block_streak,
         "notify_enabled": get_telegram_notifier().enabled,
     })
 

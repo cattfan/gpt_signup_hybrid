@@ -208,6 +208,10 @@ class UpiQrResult:
     backend_exception_count: int = 0
     restart_count: int = 0
     elapsed_seconds: float = 0.0
+    # True khi cycle bị break sớm do block-streak (N approve attempt IP/edge-reject
+    # liên tiếp) → outer loop (UpiJobManager) re-login + checkout/IP mới. Chỉ set
+    # khi relogin_block_streak>0. KHÔNG vào to_dict (tín hiệu nội bộ outer-loop).
+    relogin_requested: bool = field(default=False, repr=False)
     # Auth artifacts để re-check session sau khi QR hết hạn (in-memory, KHÔNG
     # đưa vào to_dict() — caller giữ riêng, không leak ra JSON SSE/snapshot).
     access_token: str | None = field(default=None, repr=False)
@@ -1462,6 +1466,34 @@ def _is_backend_exception(attempt: dict[str, Any]) -> bool:
     return attempt.get("http_status") == 200 and attempt.get("result") == "exception"
 
 
+def _is_retryable_reject(attempt: dict[str, Any]) -> bool:
+    """Attempt thuộc loại 'IP/edge/risk reject' mà re-login + IP/checkout mới
+    có thể fix.
+
+    = Stripe ``result=="blocked"`` (risk reject) HOẶC ``http_status in (403, 429)``
+    (Cloudflare/edge chặn IP / rate-limit). KHÔNG gồm:
+      - exception/network (``http_status is None``) — transient, re-login spam → lockout;
+      - backend ``result=="exception"`` (http 200) — server hiccup, không phải IP;
+      - approved / http khác (500…) — không phải tín hiệu đổi IP.
+    """
+    if attempt.get("result") == "blocked":
+        return True
+    return attempt.get("http_status") in (403, 429)
+
+
+def cycle_all_blocked(approve_attempts: list[dict[str, Any]]) -> bool:
+    """True ⟺ có >=1 approve attempt VÀ TẤT CẢ là IP/edge reject (blocked|403|429).
+
+    Outer-cycle (UpiJobManager) dùng để quyết định re-login: chỉ re-login khi
+    nguyên nhân fail là IP/edge — login + checkout/IP mới mới có ý nghĩa. Bất kỳ
+    attempt approved/exception/network/http-khác → False (không re-login: tránh
+    spam login khi lỗi transient/server). Pure function → unit-test truth table.
+    """
+    if not approve_attempts:
+        return False
+    return all(_is_retryable_reject(a) for a in approve_attempts)
+
+
 def _is_network_error(attempt: dict[str, Any]) -> bool:
     """Attempt fail vì network/timeout/DNS — KHÔNG có response từ server.
 
@@ -1544,6 +1576,7 @@ async def run_upi_qr_probe(
     max_restarts: int = 0,
     proxy_from_step: int = PROXY_FROM_STEP,
     approve_retry_delay: float | None = None,
+    relogin_block_streak: int = 0,
     auth_sink: dict[str, Any] | None = None,
 ) -> UpiQrResult:
     """Login + checkout + confirm UPI + approve loop → save QR PNG.
@@ -1584,6 +1617,8 @@ async def run_upi_qr_probe(
         raise UpiQrError(f"restart_threshold phải >= 0, got {restart_threshold}")
     if max_restarts < 0:
         raise UpiQrError(f"max_restarts phải >= 0, got {max_restarts}")
+    if relogin_block_streak < 0:
+        raise UpiQrError(f"relogin_block_streak phải >= 0, got {relogin_block_streak}")
     if not (1 <= proxy_from_step <= 6):
         raise UpiQrError(
             f"proxy_from_step phải trong [1, 6], got {proxy_from_step}"
@@ -1803,6 +1838,9 @@ async def run_upi_qr_probe(
     backend_exception_count = 0
     consecutive_backend_exception = 0
     fatal_approve_error: str | None = None
+    # Block-streak re-login: set True khi N approve attempt IP/edge-reject liên
+    # tiếp (chỉ khi relogin_block_streak>0) → outer loop re-login. Persist qua phase.
+    relogin_requested = False
     amount = 0
     return_url = ""
     session_id = ""
@@ -2055,6 +2093,7 @@ async def run_upi_qr_probe(
                 ))
             consecutive_backend_exception = 0  # reset đầu mỗi phase
             consecutive_network_error = 0      # reset đầu mỗi phase
+            consecutive_reject = 0             # reset đầu mỗi phase (block-streak)
 
             approve_started = monotonic()
             # Cache materialized URL theo batch-index: sticky SID/IP trong 1
@@ -2115,6 +2154,23 @@ async def run_upi_qr_probe(
                 if approve_attempt.get("ok"):
                     approved = True
                     break
+                # Block-streak detector (chỉ active khi relogin_block_streak>0,
+                # tức max_outer_cycles>1 ở manager). N attempt IP/edge-reject
+                # (blocked|403|429) LIÊN TIẾP → break cycle sớm để outer loop
+                # re-login + checkout/IP mới, KHÔNG đốt hết approve_retries.
+                if relogin_block_streak > 0:
+                    if _is_retryable_reject(approve_attempt):
+                        consecutive_reject += 1
+                        if consecutive_reject >= relogin_block_streak:
+                            relogin_requested = True
+                            _safe_log(_fmt_step(
+                                "6/6", "approve", "warn",
+                                f"block-streak {consecutive_reject}/{relogin_block_streak} "
+                                f"IP/edge-reject liên tiếp → break cycle để re-login",
+                            ))
+                            break
+                    else:
+                        consecutive_reject = 0
                 # Phân loại response để counter chính xác:
                 #   - http_status=None → network/timeout/DNS error (KHÔNG có
                 #     response từ Stripe). Stripe state vẫn nguyên, KHÔNG đụng
@@ -2249,7 +2305,7 @@ async def run_upi_qr_probe(
                 ))
 
             # Decide outcome of phase
-            if approved or fatal_approve_error:
+            if approved or fatal_approve_error or relogin_requested:
                 break
             if approve_index_total >= approve_retries:
                 # Cạn budget mà vẫn không approved → kết thúc, không restart.
@@ -2397,6 +2453,7 @@ async def run_upi_qr_probe(
             else None
         ),
         proxy_used=first_proxy,
+        relogin_requested=relogin_requested,
     )
 
 

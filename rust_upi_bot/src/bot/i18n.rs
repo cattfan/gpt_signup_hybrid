@@ -170,6 +170,15 @@ pub fn qr_caption(lang: Lang, email: &str, expires: &str) -> String {
     )
 }
 
+/// Tin nhắn riêng kèm link thanh toán (gửi sau ảnh QR khi thành công).
+pub fn payment_link_msg(lang: Lang, url: &str) -> String {
+    pick(
+        lang,
+        &format!("💳 Link thanh toán:\n{}", url),
+        &format!("💳 Payment link:\n{}", url),
+    )
+}
+
 // ─── Stop ─────────────────────────────────────────────────────────────
 
 pub fn stopped_this(lang: Lang) -> String {
@@ -212,4 +221,221 @@ pub fn unknown_command(lang: Lang, cmd: &str) -> String {
 
 pub fn status_online(lang: Lang) -> String {
     pick(lang, "✅ Bot đang hoạt động.", "✅ Bot online.")
+}
+
+// ─── Proxy: buttons ───────────────────────────────────────────────────
+
+pub fn btn_proxy_check(lang: Lang) -> String {
+    pick(lang, "🔍 Kiểm tra trạng thái", "🔍 Check live status")
+}
+pub fn btn_proxy_remove(lang: Lang) -> String {
+    pick(lang, "🗑 Xóa proxy", "🗑 Remove proxy")
+}
+
+// ─── Proxy: /proxy_set ────────────────────────────────────────────────
+
+pub fn proxy_show_current(lang: Lang, masked: &str) -> String {
+    pick(
+        lang,
+        &format!(
+            "🌐 Proxy của bạn:\n{}\n\nDùng các nút bên dưới để kiểm tra trạng thái hoặc xóa.\n\
+             Đổi proxy: /proxy_set <line>",
+            masked
+        ),
+        &format!(
+            "🌐 Your proxy:\n{}\n\nUse the buttons below to check live status or remove it.\n\
+             To change proxy: /proxy_set <line>",
+            masked
+        ),
+    )
+}
+
+pub fn proxy_set_usage(lang: Lang) -> String {
+    pick(
+        lang,
+        "ℹ️ Bạn chưa đặt proxy.\n\n\
+         Cách dùng:\n\
+         /proxy_set host:port\n\
+         /proxy_set host:port:user:pass\n\
+         /proxy_set http://user:pass@host:port\n\
+         /proxy_set socks5://user:pass@host:1080\n\n\
+         Hỗ trợ {SID} cho sticky session:\n\
+         /proxy_set host:port:user-{SID}:pass",
+        "ℹ️ You haven't set a proxy yet.\n\n\
+         Usage:\n\
+         /proxy_set host:port\n\
+         /proxy_set host:port:user:pass\n\
+         /proxy_set http://user:pass@host:port\n\
+         /proxy_set socks5://user:pass@host:1080\n\n\
+         Supports {SID} placeholder for sticky sessions:\n\
+         /proxy_set host:port:user-{SID}:pass",
+    )
+}
+
+pub fn proxy_empty_line(lang: Lang) -> String {
+    pick(lang, "❌ Dòng proxy rỗng.", "❌ Empty proxy line.")
+}
+
+pub fn proxy_invalid_format(lang: Lang, err: &str) -> String {
+    pick(
+        lang,
+        &format!(
+            "❌ Định dạng proxy không hợp lệ: {}\n\n\
+             Hỗ trợ:\n\
+             • host:port\n\
+             • host:port:user:pass\n\
+             • scheme://user:pass@host:port",
+            err
+        ),
+        &format!(
+            "❌ Invalid proxy format: {}\n\n\
+             Supported:\n\
+             • host:port\n\
+             • host:port:user:pass\n\
+             • scheme://user:pass@host:port",
+            err
+        ),
+    )
+}
+
+pub fn proxy_save_failed(lang: Lang, err: &str) -> String {
+    pick(
+        lang,
+        &format!("❌ Lưu thất bại: {}", err),
+        &format!("❌ Save failed: {}", err),
+    )
+}
+
+pub fn proxy_set_ok(lang: Lang, masked: &str, from_step: u32) -> String {
+    pick(
+        lang,
+        &format!(
+            "✅ Đã đặt proxy riêng của bạn.\n{}\n\n\
+             Job tiếp theo sẽ dùng proxy này (ghi đè pool chung từ step {} trở đi).\n\
+             Dùng các nút bên dưới để kiểm tra trạng thái hoặc xóa.",
+            masked, from_step
+        ),
+        &format!(
+            "✅ Your private proxy has been set.\n{}\n\n\
+             Your next job will use this proxy (overrides the global pool from step {} onward).\n\
+             Use the buttons below to check live status or remove it.",
+            masked, from_step
+        ),
+    )
+}
+
+// ─── Proxy: /proxy_remove + callbacks ─────────────────────────────────
+
+pub fn proxy_removed_global(lang: Lang) -> String {
+    pick(
+        lang,
+        "🧹 Đã xóa proxy của bạn. Job tiếp theo sẽ dùng pool chung của admin (hoặc DIRECT).",
+        "🧹 Your proxy has been removed. Your next job will use the admin's global pool (or DIRECT).",
+    )
+}
+
+pub fn proxy_removed_direct(lang: Lang) -> String {
+    pick(
+        lang,
+        "🧹 Đã xóa proxy của bạn. Job tiếp theo sẽ chạy DIRECT (hoặc dùng pool chung của admin).",
+        "🧹 Your proxy has been removed. Your next job will run DIRECT (or use the admin's global pool).",
+    )
+}
+
+pub fn proxy_none_to_remove(lang: Lang) -> String {
+    pick(
+        lang,
+        "ℹ️ Bạn chưa đặt proxy nào để xóa.",
+        "ℹ️ You don't have a proxy set to remove.",
+    )
+}
+
+pub fn proxy_not_set(lang: Lang) -> String {
+    pick(lang, "ℹ️ Bạn chưa đặt proxy.", "ℹ️ You haven't set a proxy yet.")
+}
+
+pub fn proxy_remove_failed(lang: Lang, err: &str) -> String {
+    pick(
+        lang,
+        &format!("❌ Xóa thất bại: {}", err),
+        &format!("❌ Remove failed: {}", err),
+    )
+}
+
+pub fn db_error(lang: Lang, err: &str) -> String {
+    pick(
+        lang,
+        &format!("❌ Lỗi DB: {}", err),
+        &format!("❌ DB error: {}", err),
+    )
+}
+
+// ─── Proxy: probe result card ─────────────────────────────────────────
+
+pub fn proxy_probe_card(
+    lang: Lang,
+    ok: bool,
+    status: &str,
+    masked_line: &str,
+    latency_ms: u64,
+    detail_label_value: &str,
+    endpoint: &str,
+) -> String {
+    let icon = if ok { "✅" } else { "❌" };
+    pick(
+        lang,
+        &format!(
+            "{} Kiểm tra proxy: {}\n\
+             Dòng: {}\n\
+             Độ trễ: {} ms\n\
+             {}\n\
+             Endpoint: {}\n",
+            icon, status, masked_line, latency_ms, detail_label_value, endpoint
+        ),
+        &format!(
+            "{} Proxy probe: {}\n\
+             Line: {}\n\
+             Latency: {} ms\n\
+             {}\n\
+             Endpoint: {}\n",
+            icon, status, masked_line, latency_ms, detail_label_value, endpoint
+        ),
+    )
+}
+
+/// Nhãn dòng detail trong probe card (Exit IP khi OK, Detail khi lỗi).
+pub fn proxy_probe_detail(lang: Lang, ok: bool, value: &str) -> String {
+    if ok {
+        pick(lang, &format!("IP ra: {}", value), &format!("Exit IP: {}", value))
+    } else {
+        pick(lang, &format!("Chi tiết: {}", value), &format!("Detail: {}", value))
+    }
+}
+
+// ─── Short toasts (answerCallbackQuery) ───────────────────────────────
+
+pub fn toast_blocked(lang: Lang) -> String {
+    pick(lang, "Bạn đã bị chặn", "You are blocked")
+}
+pub fn toast_not_whitelisted(lang: Lang) -> String {
+    pick(lang, "Chưa được cấp quyền", "Not whitelisted")
+}
+pub fn toast_probing(lang: Lang) -> String {
+    pick(lang, "Đang kiểm tra...", "Probing...")
+}
+pub fn toast_removed(lang: Lang) -> String {
+    pick(lang, "Đã xóa", "Removed")
+}
+pub fn toast_nothing_to_remove(lang: Lang) -> String {
+    pick(lang, "Không có gì để xóa", "Nothing to remove")
+}
+pub fn toast_db_error(lang: Lang) -> String {
+    pick(lang, "Lỗi DB", "DB error")
+}
+pub fn toast_unknown_action(lang: Lang) -> String {
+    pick(lang, "Hành động không xác định", "Unknown action")
+}
+
+pub fn admin_only(lang: Lang) -> String {
+    pick(lang, "⛔ Lệnh chỉ dành cho admin.", "⛔ Admin-only command.")
 }

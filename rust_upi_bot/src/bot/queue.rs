@@ -20,7 +20,9 @@ use tokio_util::sync::CancellationToken;
 pub struct Job {
     pub user_id: i64,
     pub job_id: u64,
+    #[allow(dead_code)]
     pub chat_id: i64,
+    #[allow(dead_code)]
     pub username: Option<String>,
     pub config: UpiJobConfig,
     pub log_tx: mpsc::UnboundedSender<JobEvent>,
@@ -30,6 +32,7 @@ pub struct Job {
 
 #[derive(Debug, Clone)]
 pub enum JobEvent {
+    #[allow(dead_code)]
     Queued { position: usize },
     Started,
     Log(String),
@@ -237,6 +240,7 @@ mod tests {
                     restart_threshold: 0,
                     max_restarts: 0,
                     proxy_from_step: 3,
+                    login_proxy: None,
                     qr_out_path: PathBuf::from("/tmp/x.png"),
                     bundles_cache_dir: PathBuf::from("/tmp/x"),
                     qr_watermark: String::new(),

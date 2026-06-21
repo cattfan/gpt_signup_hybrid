@@ -74,7 +74,9 @@ _EXACT_KEYS: frozenset[str] = frozenset([
     "upi.approve_retry_delay",
     "upi.notify_enabled",
     "upi.approve.restart_threshold", "upi.approve.max_restarts",
-    "upi.proxy_from_step",
+    "upi.proxy_from_step", "upi.max_outer_cycles",
+    "upi.relogin_block_streak",
+    "session.login_flow",
     "telegram.bot_token", "telegram.chat_id",
     "ui.active_tab", "ui.link_mode",
     "web.auth_token",
@@ -243,6 +245,22 @@ def _validate_type_constraint(key: str, value: Any) -> None:
         if not (lo <= value <= hi):
             raise RepositoryError(
                 "set", ValueError(f"{key}: must be in [{lo}, {hi}], got {value}")
+            )
+        return
+
+    # --- session namespace ---
+    if key == "session.login_flow":
+        # Chọn flow login pure-HTTP cho get_session_pure_request:
+        #   "anti409" (default) = flow dev: warm + pre-set oai-did +
+        #     auth_session_logging_id + sentinel "password_verify" + assume-password
+        #     fallback → tránh HTTP 409 invalid_state (tốt cho batch password combo).
+        #   "legacy" = flow main: _step_auth_url + authorize/continue fallback +
+        #     sentinel "login" → dò được passwordless/OTP khi landing không rõ.
+        if not isinstance(value, str) or value not in ("legacy", "anti409"):
+            raise RepositoryError(
+                "set", ValueError(
+                    f"{key}: must be str in {{\"legacy\",\"anti409\"}}, got {value!r}"
+                )
             )
         return
 
@@ -455,6 +473,35 @@ def _validate_type_constraint(key: str, value: Any) -> None:
         if not (0 <= value <= 2000):
             raise RepositoryError(
                 "set", ValueError(f"{key}: must be in [0, 2000], got {value}")
+            )
+        return
+
+    if key == "upi.max_outer_cycles":
+        # Số outer-cycle re-login tối đa khi MỌI approve attempt của 1 cycle
+        # đều IP/edge-reject (blocked | http 403/429). 1 = behavior cũ (không
+        # re-login). >1 = re-login + checkout/token/IP mới, tối đa N cycle.
+        # Range [1, 5] — trên 5 vô nghĩa (mỗi cycle tốn full approve budget).
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise RepositoryError(
+                "set", TypeError(f"{key}: must be int, got {type(value).__name__}")
+            )
+        if not (1 <= value <= 5):
+            raise RepositoryError(
+                "set", ValueError(f"{key}: must be in [1, 5], got {value}")
+            )
+        return
+
+    if key == "upi.relogin_block_streak":
+        # Số approve attempt IP/edge-reject (blocked|403|429) LIÊN TIẾP để break
+        # cycle sớm → re-login (chỉ áp dụng khi max_outer_cycles>1). 0 = off
+        # (chạy hết approve_retries mới re-login). Range [0, 1000].
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise RepositoryError(
+                "set", TypeError(f"{key}: must be int, got {type(value).__name__}")
+            )
+        if not (0 <= value <= 1000):
+            raise RepositoryError(
+                "set", ValueError(f"{key}: must be in [0, 1000], got {value}")
             )
         return
 

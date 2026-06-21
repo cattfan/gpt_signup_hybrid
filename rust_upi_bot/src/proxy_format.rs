@@ -190,6 +190,25 @@ pub fn validate_and_mask(line: &str) -> Result<String> {
     Ok(mask_proxy(line))
 }
 
+/// Chuẩn hóa `socks5://` → `socks5h://` (remote DNS). Idempotent: `socks5h://`
+/// KHÔNG match prefix `socks5://` nên gọi nhiều lần an toàn. Mirror logic
+/// `LoginClient::new` để probe/login/runner dùng CHUNG 1 dạng URL → tránh
+/// phân kỳ giữa stack probe (reqwest) và stack login (wreq).
+pub fn normalize_socks(url: String) -> String {
+    if let Some(rest) = url.strip_prefix("socks5://") {
+        format!("socks5h://{}", rest)
+    } else {
+        url
+    }
+}
+
+/// Materialize line → concrete URL ĐÃ normalize cho HTTP client. Đây là single
+/// source mọi consumer (login, runner pool, probe) PHẢI dùng để materialize
+/// proxy trước khi feed reqwest/wreq → đảm bảo cùng 1 URL shape.
+pub fn materialize_for_client(line: &str, sid_len: usize) -> Result<String> {
+    Ok(normalize_socks(materialize_proxy(line, sid_len)?))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

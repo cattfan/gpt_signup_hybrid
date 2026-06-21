@@ -103,6 +103,7 @@ impl JobRegistry {
     }
 
     /// Số user còn entry (memory metric).
+    #[allow(dead_code)]
     pub async fn user_count(&self) -> usize {
         self.inner.map.lock().await.len()
     }

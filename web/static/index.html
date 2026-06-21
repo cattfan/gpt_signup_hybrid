@@ -201,7 +201,24 @@
   <section class="card card-input">
     <header class="card-head">
       <h2>Input</h2>
-      <span class="muted card-head-note">Một dòng 1 account: <code>email|password|secret_2fa</code></span>
+      <div class="card-head-actions upi-head-config">
+        <label class="input-group config-field-short" title="Số `result=exception` LIÊN TIẾP để trigger restart checkout (lấy link payment mới). Default 1 = mỗi exception là 1 restart. Bộ đếm retry KHÔNG reset qua restart — giữ cộng dồn. 0 = tắt restart (giữ behavior cũ).">
+          <span class="input-label">Restart threshold</span>
+          <input type="number" id="upi-restart-threshold" value="1" min="0" max="1000" step="1" />
+        </label>
+        <label class="input-group config-field-short" title="Số lần restart tối đa trong 1 job. Default 500 ≈ approve_retries → không cạn quota. 0 = tắt restart.">
+          <span class="input-label">Max restarts</span>
+          <input type="number" id="upi-max-restarts" value="500" min="0" max="2000" step="1" />
+        </label>
+        <label class="input-group config-field-short" title="Số lần RE-LOGIN tối đa khi MỌI approve attempt của 1 cycle đều bị IP/edge-reject (blocked/403/429). Mỗi cycle = login + checkout + token + IP mới. 1 = tắt (behavior cũ). 2-5 = thử lại với danh tính/IP mới khi cả pool bị chặn.">
+          <span class="input-label">Re-login cycles</span>
+          <input type="number" id="upi-max-outer-cycles" value="1" min="1" max="5" step="1" />
+        </label>
+        <label class="input-group config-field-short" title="Khi Re-login cycles > 1: số approve attempt bị IP/edge-reject (blocked/403/429) LIÊN TIẾP để break cycle sớm và re-login ngay (không đốt hết approve_retries). 0 = tắt (chạy hết approve_retries mới re-login). Default 12.">
+          <span class="input-label">Block-streak</span>
+          <input type="number" id="upi-relogin-block-streak" value="12" min="0" max="1000" step="1" />
+        </label>
+      </div>
     </header>
     <textarea class="combo-textarea" id="upi-combo-input" placeholder="email1@nik.edu.pl|GPT#xxx|TOTP_SECRET&#10;email2@nik.edu.pl|GPT#yyy|TOTP_SECRET"></textarea>
     <div class="card-settings">
@@ -228,14 +245,6 @@
         <label class="input-group config-field-short" title="Delay (giây) giữa 2 lần retry approve. Tối thiểu 2s. Tăng lên 7-10s nếu bị block thường xuyên.">
           <span class="input-label">Retry delay (s)</span>
           <input type="number" id="upi-approve-retry-delay" value="2" min="2" max="60" step="1" />
-        </label>
-        <label class="input-group config-field-short" title="Số `result=exception` LIÊN TIẾP để trigger restart checkout (lấy link payment mới). Default 1 = mỗi exception là 1 restart. Bộ đếm retry KHÔNG reset qua restart — giữ cộng dồn. 0 = tắt restart (giữ behavior cũ).">
-          <span class="input-label">Restart threshold</span>
-          <input type="number" id="upi-restart-threshold" value="1" min="0" max="1000" step="1" />
-        </label>
-        <label class="input-group config-field-short" title="Số lần restart tối đa trong 1 job. Default 500 ≈ approve_retries → không cạn quota. 0 = tắt restart.">
-          <span class="input-label">Max restarts</span>
-          <input type="number" id="upi-max-restarts" value="500" min="0" max="2000" step="1" />
         </label>
         <span class="settings-divider" aria-hidden="true"></span>
         <label class="toggle-wrap" id="upi-notify-wrap" title="Bật để gửi QR + thông tin account qua Telegram khi job xong">
@@ -585,6 +594,19 @@
       </header>
 
       <div class="settings-section-body">
+        <label class="input-group" id="login-flow-field" title="Flow login pure-HTTP (TOÀN CỤC — áp cho UPI + Get Session + Reg pure_request + CLI). anti409 = warm + pre-set oai-did + auth_session_logging_id + sentinel password_verify, chống HTTP 409 invalid_state (tốt cho batch password combo). legacy = authorize/continue fallback (dò được passwordless/OTP khi landing không rõ).">
+          <span class="input-label">Login flow (toàn cục)</span>
+          <select id="login-flow-select" class="hme-select-sm">
+            <option value="anti409">anti409 — chống HTTP 409 (mặc định)</option>
+            <option value="legacy">legacy — authorize/continue (passwordless/OTP)</option>
+          </select>
+        </label>
+        <p class="settings-hint muted">
+          Áp cho mọi flow login pure-HTTP. <strong>anti409</strong>: tốt cho batch password combo.
+          <strong>legacy</strong>: dùng khi có account passwordless/OTP mà landing không rõ.
+        </p>
+        <span class="settings-divider" aria-hidden="true"></span>
+
         <p class="settings-hint muted">
           Mỗi dòng 1 proxy, hỗ trợ 3 dạng:
           <code>host:port:user:pass</code> ·
