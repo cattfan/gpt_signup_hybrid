@@ -1141,29 +1141,20 @@ class SessionResultRepository:
         return [dict(row) for row in rows]
 
     def cleanup_old_results(self, max_age_days: int = 90) -> int:
-        """Xoá session_results rows cũ hơn max_age_days.
+        """RETENTION VĨNH VIỄN — KHÔNG xoá session_results (theo yêu cầu).
+
+        Dữ liệu session là tài sản quan trọng (account + token + 2FA); giữ lại
+        phòng trường hợp mất mát ở nơi khác. Đường DELETE đã bị vô hiệu hoá:
+        method này luôn no-op, trả 0. Signature giữ nguyên để không vỡ caller
+        nếu có. KHÔNG khôi phục logic DELETE nếu chưa có yêu cầu rõ ràng.
 
         Args:
-            max_age_days: Số ngày tối đa giữ results. Default 90.
+            max_age_days: Bỏ qua (giữ để tương thích chữ ký cũ).
 
         Returns:
-            Số lượng rows đã xoá.
-
-        Raises:
-            RepositoryError: Nếu write operation fail.
+            Luôn 0 (không xoá gì).
         """
-        try:
-            with self._engine.get_connection() as conn:
-                cursor = conn.execute(
-                    """
-                    DELETE FROM session_results
-                    WHERE datetime(created_at) < datetime('now', ? || ' days')
-                    """,
-                    (f"-{max_age_days}",),
-                )
-                return cursor.rowcount
-        except Exception as exc:
-            raise RepositoryError("cleanup_old_results", exc) from exc
+        return 0
 
 
 # --- Terminal statuses for job lifecycle ---

@@ -25,7 +25,6 @@ import logging
 import os
 import random
 import re
-import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -893,6 +892,209 @@ async def _poll_otp_async(
 # ─── Main orchestrator ────────────────────────────────────────────────
 
 
+def _acquire_fresh_otp(
+    *,
+    session,
+    device_id: str,
+    mail_provider: MailProvider,
+    request: SignupRequest,
+    log: Callable,
+    loop,
+    started_at: datetime,
+    tried_codes: set[str],
+    pending: list[str],
+    max_resends: int,
+) -> tuple[str, int]:
+    """Lấy 1 OTP code chưa nằm trong ``tried_codes`` — mirror vòng poll đầu của
+    ``browser_phase._run_signup_flow``.
+
+    Hành vi (theo thứ tự ưu tiên mỗi vòng):
+      1. Pop ``pending`` (code dư từ ``poll_all_codes`` lần trước) chưa thử → trả ngay.
+      2. Poll 1 chunk ngắn (15s) để kiểm tra ngưỡng resend kịp thời.
+      3. Nhận code MỚI → ``poll_all_codes`` để bắt mail delay (iCloud HME hay gửi
+         trễ/nhiều mail OTP); nạp code dư vào ``pending``, trả code đầu.
+      4. RESEND khi đã chờ quá ngưỡng (random ~[base*0.5, base], base =
+         otp_resend_after_seconds) mà CHƯA có code mới — bất kể mailbox trả code cũ
+         (stale) hay rỗng. Khác browser ở chỗ này: account MỚI mailbox chỉ có đúng
+         1 code; nếu code đó sai thì KHÔNG bao giờ có code mới nếu không resend.
+         Resend reset mốc thời gian + chỉ nhận code về SAU resend (``cur_started``).
+      5. Hết quota ``max_resends`` hoặc chưa tới ngưỡng → chờ tiếp tới hết
+         ``otp_timeout_seconds`` rồi raise.
+
+    Mutates ``pending`` in-place. Trả ``(code, resends_used)``. Raise
+    ``RequestPhaseError`` khi hết ``otp_timeout_seconds`` mà không có code mới.
+    """
+    recipient = request.source_email or request.email
+    poll_interval = max(5.0, request.otp_poll_interval_seconds)
+    # Poll theo chunk ngắn để check ngưỡng resend kịp thời ngay cả khi mailbox
+    # chỉ trả code cũ (stale) hoặc rỗng liên tục.
+    poll_chunk = 15.0
+
+    def _resend_threshold() -> float:
+        # Random hoá thời điểm resend (human-like) trong [base*0.5, base];
+        # base = otp_resend_after_seconds (config). base=120s → ~60-120s ("1-2 phút").
+        base = max(10.0, float(request.otp_resend_after_seconds))
+        return random.uniform(base * 0.5, base)
+
+    resend_count = 0
+    stale_count = 0
+    cur_started = started_at
+    deadline = time.monotonic() + request.otp_timeout_seconds
+    # Mốc đo thời gian chờ code mới — reset sau mỗi resend.
+    resend_window_start = time.monotonic()
+    resend_threshold = _resend_threshold()
+
+    while True:
+        # 1. Pop pending chưa thử trước khi đụng mạng.
+        while pending:
+            candidate = pending.pop(0)
+            if candidate not in tried_codes:
+                return candidate, resend_count
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RequestPhaseError(
+                f"OTP timeout {request.otp_timeout_seconds:.0f}s — không nhận được "
+                f"code mới (đã resend {resend_count} lần)"
+            )
+
+        # 2. Poll 1 chunk ngắn.
+        chunk = min(poll_chunk, remaining)
+        try:
+            candidate = loop.run_until_complete(
+                mail_provider.poll_otp(
+                    recipient=recipient,
+                    started_at=cur_started,
+                    timeout_seconds=chunk,
+                    poll_interval_seconds=poll_interval,
+                    log=log,
+                )
+            )
+        except TimeoutError:
+            candidate = ""
+        except Exception as exc:
+            log(f"[request] poll OTP lỗi (tiếp tục): {type(exc).__name__}: {exc}")
+            candidate = ""
+
+        # 3. Code MỚI → fetch all để bắt mail delay, trả code đầu.
+        if candidate and candidate not in tried_codes:
+            time.sleep(2.0)
+            all_codes: list[str] = []
+            if hasattr(mail_provider, "poll_all_codes"):
+                try:
+                    all_codes = loop.run_until_complete(
+                        mail_provider.poll_all_codes(
+                            recipient=recipient,
+                            started_at=cur_started,
+                            log=log,
+                        )
+                    )
+                except Exception:
+                    all_codes = []
+            fresh = [c for c in all_codes if c not in tried_codes]
+            if not fresh:
+                fresh = [candidate]
+            elif candidate not in fresh:
+                fresh.insert(0, candidate)
+            if len(fresh) > 1:
+                log(f"[request] nhận {len(fresh)} OTP codes mới: {', '.join(fresh)}")
+            first = fresh.pop(0)
+            pending[:] = fresh
+            return first, resend_count
+
+        # 4. Code cũ (đã thử) lặp lại — log theo dõi.
+        if candidate and candidate in tried_codes:
+            stale_count += 1
+            log(
+                f"[request] poll trả code đã thử ({candidate}) → chờ code mới "
+                f"(lần {stale_count})"
+            )
+
+        # 5. Chưa có code mới (stale HOẶC rỗng). Resend khi đã chờ quá ngưỡng + còn
+        #    quota. Account MỚI mailbox chỉ có 1 code: code sai → phải resend mới có
+        #    code mới, KHÔNG thể chờ suông.
+        waited = time.monotonic() - resend_window_start
+        if resend_count < max_resends and waited >= resend_threshold:
+            resend_count += 1
+            log(
+                f"[request] chờ {waited:.0f}s chưa có code mới — resend OTP "
+                f"({resend_count}/{max_resends})"
+            )
+            try:
+                if not _step_resend_otp(session, device_id, log):
+                    _step_send_otp(session, device_id, log)
+            except Exception as exc:
+                log(f"[request] resend OTP lỗi (vẫn poll tiếp): {exc}")
+            time.sleep(2.0)
+            # Chỉ nhận code về SAU resend; reset cửa sổ chờ + random ngưỡng mới.
+            cur_started = datetime.now(timezone.utc)
+            resend_window_start = time.monotonic()
+            resend_threshold = _resend_threshold()
+            continue
+
+        # Chưa tới ngưỡng resend (hoặc hết quota) → chờ rồi poll lại.
+        time.sleep(poll_interval)
+
+
+def _prefer_newest_untried_otp(
+    *,
+    current: str,
+    mail_provider: MailProvider,
+    loop,
+    recipient: str,
+    started_at: datetime,
+    tried_codes: set[str],
+    pending: list[str],
+    log: Callable,
+) -> str:
+    """Refresh mailbox 1 lần (non-blocking) ngay trước khi verify, trả code MỚI
+    NHẤT chưa thử.
+
+    Lý do: ``_acquire_fresh_otp`` trả code newest tại thời điểm gọi, nhưng có nhịp
+    human-delay (2-4s) trước khi submit. Code mới hơn (OpenAI gửi lại / mail
+    in-flight) có thể về đúng trong khoảng này. OpenAI vô hiệu code cũ khi phát code
+    mới → verify code cũ trước sẽ ăn 401 dư thừa rồi mới retry sang code mới.
+
+    An toàn với lệch giờ HME: nếu có code mới hơn, code hiện tại KHÔNG bị bỏ — nó
+    được đẩy lên đầu ``pending`` để retry vẫn thử lại nếu code mới sai. Vì vậy hành
+    vi luôn ``>=`` logic cũ (không bao giờ mất code, chỉ tiết kiệm 1 lần 401 khi
+    đoán đúng).
+
+    Chỉ áp dụng cho provider có ``poll_all_codes`` (worker/iCloud). Provider khác
+    trả ``current`` nguyên trạng.
+    """
+    if not hasattr(mail_provider, "poll_all_codes"):
+        return current
+    try:
+        codes = loop.run_until_complete(
+            mail_provider.poll_all_codes(
+                recipient=recipient, started_at=started_at, log=log,
+            )
+        )
+    except Exception:
+        return current
+
+    # poll_all_codes trả mới→cũ. Chọn code mới nhất chưa thử.
+    untried = [c for c in codes if c not in tried_codes]
+    if not untried:
+        return current
+    newest = untried[0]
+    if newest == current:
+        return current
+
+    # Có code mới hơn current → verify code này. Đẩy current + các untried còn lại
+    # vào đầu pending (giữ thứ tự mới→cũ) để retry không mất code nào.
+    fallback = [current] + [c for c in untried[1:] if c != current]
+    for code in reversed(fallback):
+        if code not in tried_codes and code not in pending:
+            pending.insert(0, code)
+    log(
+        f"[request] code mới hơn ({newest}) vừa về trong lúc chờ → "
+        f"verify code này thay cho {current} (giữ {current} làm fallback)"
+    )
+    return newest
+
+
 def _run_request_phase_sync(
     request: SignupRequest,
     mail_provider: MailProvider,
@@ -1029,6 +1231,12 @@ def _run_request_phase_sync(
             # Lỗi khác (5xx, 401, 422...) → fail-fast, không retry mù quáng
             raise RequestPhaseError(f"user/register failed: HTTP {resp.status_code} - {body}")
 
+        # Random 2-4s sau khi register OK rồi mới send OTP (human-like — tránh
+        # register → send OTP ngay trong cùng giây, fingerprint bot).
+        _send_delay = random.uniform(2.0, 4.0)
+        log(f"[request] chờ {_send_delay:.1f}s trước khi send OTP (human-like)")
+        time.sleep(_send_delay)
+
         # Step 6: Send OTP
         log("[request] [5/8] Sending OTP...")
         otp_started_at = datetime.now(timezone.utc)
@@ -1045,208 +1253,109 @@ def _run_request_phase_sync(
             _step_send_otp(session, device_id, log)
         log("[request] OTP sent")
 
-        # Pre-compute sentinel create_account SONG SONG với poll OTP.
-        # Trong lúc chờ OTP (~7s idle I/O), curl session KHÔNG được dùng bởi thread
-        # chính (poll đi qua mail_provider/httpx riêng), nên thread phụ độc quyền
-        # dùng session để fetch challenge. Token bind device_id+flow, không bind OTP
-        # → tái dùng được sau verify. Thread được join TRƯỚC verify OTP nên không có
-        # race trên curl session (vốn không thread-safe).
-        precomputed_sentinel: dict[str, str | None] = {"token": None}
-
-        def _precompute_create_sentinel() -> None:
-            try:
-                precomputed_sentinel["token"] = _get_sentinel_token(
-                    session, device_id, "create_account", log, worker=worker,
-                )
-            except Exception as exc:  # fallback: tính lại tại _step_create_account
-                log(f"[request] pre-compute create_account sentinel lỗi (sẽ tính lại): {exc}")
-                precomputed_sentinel["token"] = None
-
-        precompute_thread = threading.Thread(
-            target=_precompute_create_sentinel,
-            name="precompute-create-sentinel",
-            daemon=True,
-        )
-        precompute_thread.start()
-
-        # Step 6: Poll OTP directly (new event loop in this thread).
-        # started_at = send time → only accept codes delivered AFTER this point,
-        # avoiding stale codes from previous attempts in the same inbox.
+        # Step 6: Poll OTP với mini-timeout + resend có giới hạn (mirror vòng poll
+        # đầu của browser_phase). started_at = send time → chỉ nhận code về SAU thời
+        # điểm này, loại code cũ cùng inbox. Dùng 1 event loop xuyên suốt vòng poll
+        # đầu + các vòng retry verify. tried_codes/pending_codes chia sẻ toàn phase:
+        # thử hết code đã biết trước khi resend.
         log("[request] [6/8] Waiting for OTP...")
         import asyncio as _asyncio
         _loop = _asyncio.new_event_loop()
+        tried_codes: set[str] = set()
+        pending_codes: list[str] = []
+        # Tổng quota resend cho cả OTP phase. Account mới mailbox chỉ có 1 code:
+        # code sai → phải resend mới có code mới. Cho tối đa 3 lần resend.
+        total_resend_budget = 3
+        resends_used = 0
         try:
-            otp_code = _loop.run_until_complete(
-                mail_provider.poll_otp(
-                    recipient=request.source_email or request.email,
-                    started_at=otp_started_at,
-                    timeout_seconds=request.otp_timeout_seconds,
-                    poll_interval_seconds=request.otp_poll_interval_seconds,
-                    log=log,
-                )
+            otp_code, used = _acquire_fresh_otp(
+                session=session, device_id=device_id, mail_provider=mail_provider,
+                request=request, log=log, loop=_loop, started_at=otp_started_at,
+                tried_codes=tried_codes, pending=pending_codes,
+                max_resends=total_resend_budget - resends_used,
             )
-        finally:
-            _loop.close()
+            resends_used += used
 
-        # Join pre-compute thread TRƯỚC khi verify OTP → đảm bảo session free +
-        # token sẵn sàng. Timeout rộng để không treo nếu sentinel chậm bất thường.
-        precompute_thread.join(timeout=45.0)
-        if precompute_thread.is_alive():
-            log("[request] pre-compute sentinel chưa xong sau 45s → sẽ tính lại tại create_account")
-
-        if not otp_code:
-            raise RequestPhaseError("OTP polling returned empty code")
-
-        # Đã LẤY ĐƯỢC OTP → báo watchdog gia hạn deadline (tránh kill ngay sau khi có OTP).
-        if on_checkpoint is not None:
-            try:
-                on_checkpoint("otp")
-                log("[request] OTP secured — watchdog gia hạn để hoàn tất")
-            except Exception:
-                pass
-
-        # Step 7: Verify OTP với retry. Nếu server trả "wrong code" (code stale
-        # hoặc đã bị thay) → resend OTP + poll code MỚI rồi verify lại, thay vì
-        # fail cứng. Chỉ raise khi hết số lần hoặc gặp lỗi không phải wrong-code.
-        max_verify_attempts = 3
-        tried_codes: set[str] = {otp_code}
-        otp_resp: dict = {}
-        verified = False
-        for v_attempt in range(1, max_verify_attempts + 1):
-            otp_resp = _step_verify_otp(
-                session, otp_code, device_id, log, raise_on_fail=False,
-            )
-            if otp_resp.get("_ok"):
-                verified = True
-                break
-
-            status = otp_resp.get("_status")
-            body = str(otp_resp.get("_body") or "")
-            is_wrong_code = (
-                status == 401
-                or "wrong_email_otp_code" in body
-                or "wrong code" in body.lower()
-            )
-            if not is_wrong_code:
-                raise RequestPhaseError(
-                    f"OTP verify failed: HTTP {status} - {body[:200]}"
-                )
-            if v_attempt >= max_verify_attempts:
-                raise RequestPhaseError(
-                    f"OTP verify vẫn sai sau {max_verify_attempts} lần "
-                    f"(HTTP {status}) — code stale/không hợp lệ"
-                )
-
-            # Wrong code → resend OTP (email mới) + poll code mới (loại code đã thử).
-            # Mirror logic của browser_phase: poll mini-timeout từng vòng, sleep giữa
-            # các poll khi worker trả lại code cũ, đếm stale_poll_count → resend lại
-            # sau N lần code cũ liên tiếp, dùng poll_all_codes catch mail delay.
-            log(f"[request] OTP sai (lần {v_attempt}/{max_verify_attempts}) → resend + chờ code mới")
-            retry_started_at = datetime.now(timezone.utc)
-            try:
-                if not _step_resend_otp(session, device_id, log):
-                    _step_send_otp(session, device_id, log)
-            except Exception as exc:
-                log(f"[request] resend OTP lỗi (vẫn poll tiếp): {exc}")
-
-            _retry_loop = _asyncio.new_event_loop()
-            try:
-                new_code = ""
-                pending_candidates: list[str] = []
-                stale_poll_count = 0
-                resend_after_seconds = float(request.otp_resend_after_seconds)
-                poll_interval = max(5.0, request.otp_poll_interval_seconds)
-
-                _poll_deadline = time.monotonic() + request.otp_timeout_seconds
-                while time.monotonic() < _poll_deadline:
-                    # Pop pending trước nếu có (sau khi nhận code mới fetch_all)
-                    while pending_candidates:
-                        c = pending_candidates.pop(0)
-                        if c not in tried_codes:
-                            new_code = c
-                            break
-                    if new_code:
-                        break
-
-                    remaining = _poll_deadline - time.monotonic()
-                    if remaining <= 0:
-                        break
-                    mini_timeout = min(resend_after_seconds, remaining)
-
-                    try:
-                        candidate = _retry_loop.run_until_complete(
-                            mail_provider.poll_otp(
-                                recipient=request.source_email or request.email,
-                                started_at=retry_started_at,
-                                timeout_seconds=mini_timeout,
-                                poll_interval_seconds=poll_interval,
-                                log=log,
-                            )
-                        )
-                    except TimeoutError:
-                        candidate = ""
-
-                    if candidate and candidate not in tried_codes:
-                        # Nhận code mới → fetch all để catch mail delay (worker iCloud
-                        # có thể có nhiều mail OTP cùng lúc, nên thử lần lượt).
-                        time.sleep(2.0)
-                        all_codes: list[str] = []
-                        if hasattr(mail_provider, "poll_all_codes"):
-                            try:
-                                all_codes = _retry_loop.run_until_complete(
-                                    mail_provider.poll_all_codes(
-                                        recipient=request.source_email or request.email,
-                                        started_at=retry_started_at,
-                                        log=log,
-                                    )
-                                )
-                            except Exception:
-                                all_codes = []
-                        fresh = [c for c in all_codes if c not in tried_codes]
-                        if not fresh:
-                            fresh = [candidate]
-                        elif candidate not in fresh:
-                            fresh.insert(0, candidate)
-                        if len(fresh) > 1:
-                            log(f"[request] nhận {len(fresh)} OTP codes mới: {', '.join(fresh)}")
-                        new_code = fresh.pop(0)
-                        pending_candidates = fresh
-                        break
-
-                    if candidate and candidate in tried_codes:
-                        # Code cũ lặp lại = mail mới còn delay. KHÔNG resend (resend chỉ
-                        # vô hiệu mã đang bay). Poll tiếp tới hết deadline.
-                        stale_poll_count += 1
-                        log(
-                            f"[request] poll trả lại code đã thử ({candidate}) → "
-                            f"chờ code mới (lần {stale_poll_count})"
-                        )
-                        time.sleep(poll_interval)
-                        continue
-
-                    # candidate rỗng = mini-timeout hết mà không có mail nào → loop tiếp
-                    # (vẫn còn deadline). Sleep ngắn để tránh spam khi worker trả rỗng.
-                    time.sleep(poll_interval)
-            finally:
-                _retry_loop.close()
-
-            if not new_code:
-                raise RequestPhaseError("OTP retry: không nhận được code mới")
-            otp_code = new_code
-            tried_codes.add(otp_code)
+            # Đã LẤY ĐƯỢC OTP → báo watchdog gia hạn deadline (tránh kill ngay sau khi có OTP).
             if on_checkpoint is not None:
                 try:
                     on_checkpoint("otp")
+                    log("[request] OTP secured — watchdog gia hạn để hoàn tất")
                 except Exception:
                     pass
 
-        if not verified:
-            raise RequestPhaseError("OTP verify thất bại")
+            # Step 7: Verify OTP với retry. Wrong code → lấy code mới (pop pending dư
+            # hoặc poll/resend qua _acquire_fresh_otp) rồi verify lại. Chỉ raise khi
+            # hết lượt hoặc gặp lỗi không phải wrong-code. 1 code đầu + tối đa 3 code
+            # mới từ 3 lần resend = 4 lần verify.
+            max_verify_attempts = 1 + total_resend_budget
+            verified = False
+            _otp_recipient = request.source_email or request.email
+            for v_attempt in range(1, max_verify_attempts + 1):
+                # Human-like delay trước khi submit OTP — tránh verify ngay trong
+                # cùng giây nhận code (fingerprint bot). 2-4s random mỗi lần thử.
+                _verify_delay = random.uniform(2.0, 4.0)
+                log(f"[request] chờ {_verify_delay:.1f}s trước khi submit OTP (human-like)")
+                time.sleep(_verify_delay)
 
-        # Step 8: Create account (dùng sentinel pre-computed nếu có)
+                # Trong lúc chờ, code mới hơn có thể vừa về (OpenAI gửi lại / mail
+                # in-flight). Ưu tiên verify code mới nhất — tránh ăn 401 dư rồi mới
+                # retry. Code hiện tại được giữ làm fallback trong pending.
+                otp_code = _prefer_newest_untried_otp(
+                    current=otp_code, mail_provider=mail_provider, loop=_loop,
+                    recipient=_otp_recipient, started_at=otp_started_at,
+                    tried_codes=tried_codes, pending=pending_codes, log=log,
+                )
+                tried_codes.add(otp_code)
+                otp_resp = _step_verify_otp(
+                    session, otp_code, device_id, log, raise_on_fail=False,
+                )
+                if otp_resp.get("_ok"):
+                    verified = True
+                    break
+
+                status = otp_resp.get("_status")
+                body = str(otp_resp.get("_body") or "")
+                is_wrong_code = (
+                    status == 401
+                    or "wrong_email_otp_code" in body
+                    or "wrong code" in body.lower()
+                )
+                if not is_wrong_code:
+                    raise RequestPhaseError(
+                        f"OTP verify failed: HTTP {status} - {body[:200]}"
+                    )
+                if v_attempt >= max_verify_attempts:
+                    raise RequestPhaseError(
+                        f"OTP verify vẫn sai sau {max_verify_attempts} lần "
+                        f"(HTTP {status}) — code stale/không hợp lệ"
+                    )
+
+                # Wrong code → lấy code mới. _acquire_fresh_otp ưu tiên pop pending
+                # (code dư đã fetch) trước, chỉ resend khi cạn code + còn quota.
+                log(f"[request] OTP sai (lần {v_attempt}/{max_verify_attempts}) → lấy code mới")
+                otp_code, used = _acquire_fresh_otp(
+                    session=session, device_id=device_id, mail_provider=mail_provider,
+                    request=request, log=log, loop=_loop, started_at=otp_started_at,
+                    tried_codes=tried_codes, pending=pending_codes,
+                    max_resends=total_resend_budget - resends_used,
+                )
+                resends_used += used
+                if on_checkpoint is not None:
+                    try:
+                        on_checkpoint("otp")
+                    except Exception:
+                        pass
+
+            if not verified:
+                raise RequestPhaseError("OTP verify thất bại")
+        finally:
+            _loop.close()
+
+        # Step 8: Create account (sentinel create_account tính tuần tự tại đây)
         continue_url = _step_create_account(
             session, request.name, request.birthdate, device_id, log,
-            sentinel_token=precomputed_sentinel.get("token"),
+            sentinel_token=None,
             worker=worker,
         )
 

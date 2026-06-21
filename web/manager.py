@@ -544,6 +544,8 @@ class JobManager:
         self._last_start_ts: float = 0.0
         self._stagger_min_seconds = 5.0
         self._stagger_max_seconds = 10.0
+        # Bump khi có action add/remove/retry → job đang đợi stagger re-random delay.
+        self._stagger_gen: int = 0
 
     def _ensure_workers(self) -> None:
         """Đảm bảo đủ worker theo max_concurrent. Gọi mỗi khi thêm job hoặc đổi config."""
@@ -579,25 +581,21 @@ class JobManager:
                 if job is None or job.status != "queued":
                     continue  # job đã bị remove/cancel trước khi tới lượt
                 # Stagger start nếu max_concurrent > 1 (single mode không cần).
-                # Reserve slot trong lock (fast), sleep ngoài lock + poll job
-                # status mỗi 0.25s — bail nhanh nếu job bị cancel/remove giữa
-                # chừng (đảm bảo stop_all + add lại không kẹt vì stagger debt).
+                # Reserve slot trong lock (serialize worker); clamp mốc reserve
+                # ≤ now + max_seconds → KHÔNG tích luỹ mốc tương lai ảo (fix wait
+                # phình hàng trăm giây khi job fail nhanh / bị xoá giữa chừng) +
+                # chặn burst (RAM). Mọi action add/remove/retry bump _stagger_gen
+                # → job đang đợi tính lại delay random mới (force re-random).
                 if self._max > 1:
-                    async with self._stagger_lock:
-                        now = time.monotonic()
-                        wait_min = self._last_start_ts + self._stagger_min_seconds - now
-                        if wait_min > 0:
-                            jitter = random.uniform(
-                                self._stagger_min_seconds, self._stagger_max_seconds,
-                            )
-                            wait = max(wait_min, jitter)
-                            self._last_start_ts = now + wait
-                        else:
-                            wait = 0.0
-                            self._last_start_ts = now
-                    if wait > 0:
+                    while True:
+                        async with self._stagger_lock:
+                            gen = self._stagger_gen
+                            wait = self._reserve_next_start()
+                        if wait <= 0:
+                            break
                         self._job_log(job, f"[stagger] đợi {wait:.1f}s trước khi start")
                         deadline = time.monotonic() + wait
+                        rerandom = False
                         while True:
                             remaining = deadline - time.monotonic()
                             if remaining <= 0:
@@ -606,6 +604,15 @@ class JobManager:
                             cur = self.jobs.get(job_id)
                             if cur is None or cur.status != "queued":
                                 break
+                            if self._stagger_gen != gen:
+                                rerandom = True  # action add/xoá/retry → tính lại delay
+                                break
+                        cur = self.jobs.get(job_id)
+                        if cur is None or cur.status != "queued":
+                            break
+                        if rerandom:
+                            continue
+                        break
                     cur = self.jobs.get(job_id)
                     if cur is None or cur.status != "queued":
                         continue
@@ -935,6 +942,33 @@ class JobManager:
         self._delayed_requeue_tasks[job_id] = task
         task.add_done_callback(lambda _t, jid=job_id: self._delayed_requeue_tasks.pop(jid, None) if self._delayed_requeue_tasks.get(jid) is _t else None)
 
+    def _reserve_next_start(self) -> float:
+        """Reserve mốc start kế tiếp — PHẢI gọi trong ``_stagger_lock``. Trả wait (s).
+
+        start_at = max(now, last + random_gap), clamp ≤ now + max_seconds để
+        KHÔNG tích luỹ mốc tương lai ảo (fix wait phình hàng trăm giây) + chặn
+        burst. Cập nhật _last_start_ts = start_at.
+        """
+        now = time.monotonic()
+        gap = random.uniform(self._stagger_min_seconds, self._stagger_max_seconds)
+        start_at = max(now, self._last_start_ts + gap)
+        cap = now + self._stagger_max_seconds
+        if start_at > cap:
+            start_at = cap
+        self._last_start_ts = start_at
+        return start_at - now
+
+    def _bump_stagger(self) -> None:
+        """Force re-random stagger khi có action tác động hàng đợi (add/remove/retry).
+
+        Reset baseline (_last_start_ts=0) để xoá 'nợ' stagger tích luỹ + bump
+        generation để job đang đợi stagger tính lại delay random mới (không kẹt
+        theo mốc cũ khi item giữa bị xoá). Anti-burst vẫn đảm bảo: job kế tiếp
+        reserve lại tuần tự trong lock, clamp ≤ max_seconds.
+        """
+        self._last_start_ts = 0.0
+        self._stagger_gen += 1
+
     def add_jobs(self, combos: list[str], *, default_password: str | None = None, mail_mode: str = "outlook", worker_config: dict[str, str] | None = None, reg_mode: str = "browser") -> list[Job]:
         """Thêm jobs từ list combo/email strings. Skip đã có trong list (dedup theo email)."""
         spec = get_spec(mail_mode)  # KeyError nếu mode lạ — server chặn trước
@@ -1031,6 +1065,8 @@ class JobManager:
         for j in out:
             if j.status == "queued":
                 self._job_queue.put_nowait(j.id)
+        # Action add → force re-random stagger (xoá nợ tích luỹ, job đợi tính lại).
+        self._bump_stagger()
         return out
 
     def remove_job(self, job_id: str) -> bool:
@@ -1053,6 +1089,8 @@ class JobManager:
             self.order.remove(job_id)
         self._tasks.pop(job_id, None)
         self._broadcast({"type": "remove", "job_id": job_id})
+        # Action xoá → force re-random stagger (item sau không kẹt theo mốc cũ).
+        self._bump_stagger()
         return True
 
     async def stop_all(self) -> int:
@@ -1249,6 +1287,8 @@ class JobManager:
         job._retry_2fa_only = retry_2fa_only  # type: ignore[attr-defined]
         self._ensure_workers()
         self._job_queue.put_nowait(job_id)
+        # Action retry → force re-random stagger.
+        self._bump_stagger()
         return True
 
     async def rerun_link_for_job(self, job_id: str, *, region: str | None = None) -> bool:
