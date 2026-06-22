@@ -77,6 +77,7 @@ _EXACT_KEYS: frozenset[str] = frozenset([
     "upi.proxy_from_step", "upi.max_outer_cycles",
     "upi.relogin_block_streak",
     "session.login_flow",
+    "session.reuse_enabled", "session.revalidate_http", "session.cookie_max_age_hours",
     "telegram.bot_token", "telegram.chat_id",
     "ui.active_tab", "ui.link_mode",
     "web.auth_token",
@@ -261,6 +262,26 @@ def _validate_type_constraint(key: str, value: Any) -> None:
                 "set", ValueError(
                     f"{key}: must be str in {{\"legacy\",\"anti409\"}}, got {value!r}"
                 )
+            )
+        return
+
+    if key in ("session.reuse_enabled", "session.revalidate_http"):
+        # session-cookie-cache: bật/tắt tái dùng session + cách revalidate.
+        if not isinstance(value, bool):
+            raise RepositoryError(
+                "set", TypeError(f"{key}: must be bool, got {type(value).__name__}")
+            )
+        return
+
+    if key == "session.cookie_max_age_hours":
+        # Ngưỡng tuổi record trước khi buộc full login (áp cả khi revalidate_http=false).
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise RepositoryError(
+                "set", TypeError(f"{key}: must be int, got {type(value).__name__}")
+            )
+        if value < 1:
+            raise RepositoryError(
+                "set", ValueError(f"{key}: must be >= 1, got {value}")
             )
         return
 

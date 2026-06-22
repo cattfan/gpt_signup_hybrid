@@ -87,59 +87,10 @@ def _append_link_log(*, session_dir: Path, payment_link: str) -> None:
         f.write(f"{payment_link}\n")
 
 
-# ── UPI token export ──────────────────────────────────────────────────
-# Lưu auth artifacts của 1 UPI job ra file để check entitlement (Plus?) SAU
-# khi account upgrade. access_token (JWT) chỉ sống trong RAM + hết hạn sau
-# vài giờ → lưu kèm session_cookies (bền hơn) để re-mint token tươi khi cần.
-# Ghi vào runtime/ (đã .gitignore) — token KHÔNG bao giờ đi qua SSE/to_dict().
-_UPI_TOKEN_DIR = Path(__file__).resolve().parents[1] / "runtime" / "upi_tokens"
-
-
-def _safe_email_slug(email: str) -> str:
-    """Email → tên file an toàn (giữ chữ/số/._-@, ký tự khác → _)."""
-    return "".join(c if (c.isalnum() or c in "._-@") else "_" for c in email) or "unknown"
-
-
-def _export_upi_token(
-    *,
-    email: str,
-    access_token: str,
-    session_cookies: list[dict[str, Any]] | None,
-    proxy: str | None,
-    checkout_session: str | None,
-    amount: int,
-    qr_produced: bool,
-    job_ok: bool,
-) -> Path:
-    """Ghi token artifacts của 1 job ra runtime/upi_tokens/<email>.json (latest-wins).
-
-    Atomic write (tmp + replace). Trả path đã ghi. Caller wrap try/except —
-    IO lỗi KHÔNG được làm fail job (mirror accounts.txt best-effort).
-    """
-    _UPI_TOKEN_DIR.mkdir(parents=True, exist_ok=True)
-    path = _UPI_TOKEN_DIR / f"{_safe_email_slug(email)}.json"
-    payload = {
-        "email": email,
-        "access_token": access_token,
-        "session_cookies": session_cookies,
-        "proxy": proxy,
-        "checkout_session": checkout_session or None,
-        "amount": amount,
-        "qr_produced": qr_produced,
-        "job_ok": job_ok,
-        "exported_at": datetime.now().isoformat(timespec="seconds"),
-    }
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    # File chứa access_token + proxy creds + cookies → 0600 (chmod tmp TRƯỚC
-    # replace để file cuối kế thừa perm, tránh cửa sổ 0644). Best-effort: FS
-    # không hỗ trợ chmod (vd Windows) thì bỏ qua.
-    try:
-        os.chmod(tmp, 0o600)
-    except OSError:
-        pass
-    tmp.replace(path)  # atomic — đọc khi check không bao giờ thấy file dở
-    return path
+# _safe_email_slug gom về session_store (DRY). UPI token artifacts giờ lưu qua
+# Session_Store (session_cache per-instance) thay cho runtime/upi_tokens global
+# (vốn collision giữa các instance) — xem _run_job + session_provider.
+from session_store import safe_email_slug as _safe_email_slug  # noqa: E402,F401
 
 
 # ── Load .env riêng của gpt_signup_hybrid ─────────────────────────────
@@ -1943,6 +1894,17 @@ class JobManager:
                         job.finished_at = time.time()
                         self._broadcast_job(job)
                     return
+
+                # session-cookie-cache: lưu record để lần sau tái dùng (SAVE-ONLY,
+                # reg không reuse). Best-effort — lỗi cache KHÔNG làm fail job.
+                try:
+                    from session_provider import get_session_provider
+                    _prov = get_session_provider()
+                    if _prov is not None:
+                        _prov.save_login_result(result, proxy=None,
+                                                log=lambda m: self._job_log(job, m))
+                except Exception as exc_sc:  # noqa: BLE001
+                    _log.warning("session-cache save (reg) failed for %s: %s", job.email, exc_sc)
             elif self._combo_repo is not None and job.mail_mode in _OUTLOOK_COMBO_MODES:
                 try:
                     self._combo_repo.mark_success(job.email)
@@ -2868,22 +2830,16 @@ class SessionJobManager:
             #   - Non-retryable (fatal): password fail, MFA fail, no secret,
             #     OTP empty, no mail provider — không retry để tránh login spam
             #     → lockout / mail provider rate-limit.
-            from session_phase import get_session_pure_request
+            from session_phase import get_session_pure_request, is_fatal_login_error
+            from session_provider import (
+                get_session_provider,
+                strip_cookies as _strip_session_cookies,
+            )
             LOGIN_MAX_ATTEMPTS = 3
             LOGIN_RETRY_DELAY = 3.0
-            NON_RETRYABLE_PATTERNS = (
-                "password verify failed",
-                "mfa verify failed",
-                "no mail_provider available",
-                "no secret provided",
-                "yêu cầu 2fa nhưng không có",
-                "otp polling returned empty",
-                "passwordless otp login but no mail_provider",
-            )
 
             def _is_login_error_retryable(exc_msg: str) -> bool:
-                lower = exc_msg.lower()
-                return not any(pat in lower for pat in NON_RETRYABLE_PATTERNS)
+                return not is_fatal_login_error(exc_msg)
 
             async def _login_with_retry() -> dict[str, Any]:
                 last_exc: SessionError | None = None
@@ -2930,15 +2886,29 @@ class SessionJobManager:
                     raise last_exc
                 raise SessionError("login failed without specific error")
 
+            async def _acquire_session() -> dict[str, Any]:
+                # SessionProvider: reuse cookie cũ (revalidate HTTP) → bỏ qua login.
+                # Provider None (chưa init) → fallback login trực tiếp (degrade an toàn).
+                provider = get_session_provider()
+                if provider is None:
+                    return await _login_with_retry()
+                return await provider.acquire(
+                    email=job.email,
+                    proxy=None,
+                    login_fn=_login_with_retry,
+                    log=log,
+                )
+
             session_data = await asyncio.wait_for(
-                _login_with_retry(),
+                _acquire_session(),
                 timeout=self._job_timeout,
             )
 
-            job.session_data = session_data
+            # strip __cookies trước khi persist DB jobs / broadcast SSE (R4.5).
+            job.session_data = _strip_session_cookies(session_data)
             if await self._persist_status(
                 job, "success",
-                session_data=json.dumps(session_data, ensure_ascii=False) if session_data else None,
+                session_data=json.dumps(job.session_data, ensure_ascii=False) if job.session_data else None,
             ):
                 job.status = "success"
                 job.finished_at = time.time()
@@ -3891,32 +3861,41 @@ class LinkJobManager:
                 # Debug + headed → bỏ timeout để user soi browser tới khi cancel
                 timeout = None if keep_browser_open else self._job_timeout
                 try:
-                    if job.reg_mode == "pure_request":
-                        from session_phase import get_session_pure_request
-                        session_data = await asyncio.wait_for(
-                            get_session_pure_request(
+                    async def _link_login() -> dict[str, Any]:
+                        if job.reg_mode == "pure_request":
+                            from session_phase import get_session_pure_request
+                            return await get_session_pure_request(
                                 email=job.email,
                                 password=job.password,
                                 secret=job.secret,
                                 proxy=job_proxy,
                                 log=log,
-                            ),
-                            timeout=self._job_timeout,
+                            )
+                        return await get_session(
+                            email=job.email,
+                            password=job.password,
+                            secret=job.secret,
+                            headless=self._headless,
+                            proxy=job_proxy,
+                            tls_insecure=env_insecure_tls(),
+                            keep_browser_open=keep_browser_open,
+                            log=log,
                         )
-                    else:
-                        session_data = await asyncio.wait_for(
-                            get_session(
-                                email=job.email,
-                                password=job.password,
-                                secret=job.secret,
-                                headless=self._headless,
-                                proxy=job_proxy,
-                                tls_insecure=env_insecure_tls(),
-                                keep_browser_open=keep_browser_open,
-                                log=log,
-                            ),
-                            timeout=timeout,
+
+                    async def _link_acquire() -> dict[str, Any]:
+                        # SessionProvider: reuse cookie cũ → bỏ qua login (cả 2 reg_mode).
+                        from session_provider import get_session_provider
+                        provider = get_session_provider()
+                        if provider is None:
+                            return await _link_login()
+                        return await provider.acquire(
+                            email=job.email, proxy=job_proxy,
+                            login_fn=_link_login, log=log,
                         )
+
+                    # pure_request luôn dùng job_timeout; browser headed-debug → None (chờ tới khi cancel).
+                    _eff_timeout = self._job_timeout if job.reg_mode == "pure_request" else timeout
+                    session_data = await asyncio.wait_for(_link_acquire(), timeout=_eff_timeout)
                 except asyncio.TimeoutError:
                     error_msg = f"timeout {self._job_timeout:.0f}s exceeded (login phase)"
                     if await self._persist_status(job, "error", error=error_msg):
@@ -4699,6 +4678,19 @@ class UpiJobManager:
             }
 
         if not job._session_cookies:
+            # Sau restart server: cookie in-memory mất → thử load từ Session_Store
+            # (file cache bền) để vẫn check_plan được (GAP 6).
+            try:
+                from session_provider import get_session_store
+                _rec = get_session_store().load(job.email)
+                if _rec and _rec.get("cookies"):
+                    job._session_cookies = _rec["cookies"]
+                    if not job._access_token and _rec.get("access_token"):
+                        job._access_token = _rec["access_token"]
+            except Exception as exc:  # noqa: BLE001 — best-effort restore
+                _log.debug("check_plan store restore failed for %s: %s", job.email, exc)
+
+        if not job._session_cookies:
             result = {
                 "ok": False,
                 "plan": None,
@@ -4950,6 +4942,7 @@ class UpiJobManager:
         qr_out_path: Path,
         log,
         auth_sink: dict[str, Any],
+        login_fn=None,
     ) -> UpiQrResult:
         """Outer re-login loop: chạy ``run_upi_qr_probe`` tối đa ``_max_outer_cycles`` lần.
 
@@ -5019,6 +5012,8 @@ class UpiJobManager:
                 approve_retry_delay=self._approve_retry_delay,
                 relogin_block_streak=block_streak,
                 auth_sink=auth_sink,
+                login_fn=login_fn,
+                force_fresh=(cycle > 1),  # cycle re-login đổi IP → bỏ reuse cache (GAP 2)
             )
             job.cycle_count = cycle
             # Gộp attempts (tag cycle) — multi-cycle giữ full history.
@@ -5109,6 +5104,25 @@ class UpiJobManager:
             _UPI_QR_DIR.mkdir(parents=True, exist_ok=True)
             qr_out_path = _UPI_QR_DIR / f"{job.id}.png"
 
+            # SessionProvider login_fn: reuse cookie cũ → bỏ qua login. None khi
+            # provider chưa init → runner fallback get_session_pure_request trực tiếp.
+            from session_provider import get_session_provider as _get_sp
+            _sp = _get_sp()
+            _upi_login_fn = None
+            if _sp is not None:
+                from session_phase import get_session_pure_request as _gspr
+
+                async def _upi_login_fn(*, force_fresh: bool = False, proxy: str | None = None):
+                    async def _raw() -> dict[str, Any]:
+                        return await _gspr(
+                            email=job.email, password=job.password,
+                            secret=job.secret, proxy=proxy, log=log,
+                        )
+                    return await _sp.acquire(
+                        email=job.email, proxy=proxy, login_fn=_raw,
+                        log=log, force_fresh=force_fresh,
+                    )
+
             result: UpiQrResult = await asyncio.wait_for(
                 self._run_upi_cycles(
                     job,
@@ -5117,6 +5131,7 @@ class UpiJobManager:
                     qr_out_path=qr_out_path,
                     log=log,
                     auth_sink=auth_sink,
+                    login_fn=_upi_login_fn,
                 ),
                 timeout=self._job_timeout * self._max_outer_cycles,
             )
@@ -5154,19 +5169,27 @@ class UpiJobManager:
             # giá trị token (chỉ tên file).
             if result.access_token:
                 try:
-                    out = _export_upi_token(
-                        email=job.email,
-                        access_token=result.access_token,
-                        session_cookies=result.session_cookies,
-                        proxy=job._active_proxy,
-                        checkout_session=result.checkout_session,
-                        amount=result.amount,
-                        qr_produced=bool(result.qr_path),
-                        job_ok=result.ok,
-                    )
-                    self._job_log(job, f"[token] export → runtime/upi_tokens/{out.name}")
+                    from session_store import session_token_from_cookies, now_iso
+                    from session_provider import get_session_store
+                    _cookies = result.session_cookies or []
+                    get_session_store().save(job.email, {
+                        "email": job.email,
+                        "cookies": _cookies,
+                        "access_token": result.access_token,
+                        "session_token": session_token_from_cookies(_cookies),
+                        "two_factor": None,
+                        "proxy": job._active_proxy,  # Stripe IP — probe replay đúng IP
+                        "created_at": now_iso(),
+                        "last_validated_at": now_iso(),
+                        # extra cho probe scripts (probe_account_entitlement, ...):
+                        "checkout_session": result.checkout_session or None,
+                        "amount": result.amount,
+                        "qr_produced": bool(result.qr_path),
+                        "job_ok": result.ok,
+                    })
+                    self._job_log(job, "[token] saved → session_cache")
                 except Exception as exc:  # noqa: BLE001
-                    self._job_log(job, f"[token] export fail: {type(exc).__name__}: {exc}")
+                    self._job_log(job, f"[token] cache save fail: {type(exc).__name__}: {exc}")
 
             if result.ok:
                 job.status = "success"

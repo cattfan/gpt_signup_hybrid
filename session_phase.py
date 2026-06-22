@@ -40,6 +40,32 @@ class SessionError(Exception):
     """Login/session fetch failed."""
 
 
+# Login errors vĩnh viễn (fatal) — KHÔNG retry để tránh login spam → lockout /
+# mail-provider rate-limit. Nguồn chân lý DUY NHẤT (trước đây trùng ở
+# web/manager.py + web/upi_runner.py). Dùng cho retry-gate + SessionProvider
+# fatal_classifier (xoá record cache khi login fatal).
+NON_RETRYABLE_LOGIN_PATTERNS: tuple[str, ...] = (
+    "password verify failed",
+    "mfa verify failed",
+    "no mail_provider available",
+    "no secret provided",
+    "yêu cầu 2fa nhưng không có",
+    "otp polling returned empty",
+    "passwordless otp login but no mail_provider",
+)
+
+
+def is_fatal_login_error(exc: BaseException | str) -> bool:
+    """True nếu lỗi login là fatal (không nên retry / nên xoá cache record).
+
+    Nhận Exception hoặc message string. Fail-safe: chỉ True khi match pattern
+    fatal rõ ràng — lỗi transient/mạng (không match) trả False.
+    """
+    msg = exc if isinstance(exc, str) else str(exc)
+    lower = msg.lower()
+    return any(pat in lower for pat in NON_RETRYABLE_LOGIN_PATTERNS)
+
+
 # JS: fetch /api/auth/session trong page context chatgpt.com
 _FETCH_SESSION_JS = r"""
 async () => {
@@ -361,6 +387,14 @@ async def _get_session_browser(
             f"[session] ✓ done — user: "
             f"{session_data.get('user', {}).get('email', '?')}"
         )
+
+        # Capture cookies cho session-cookie-cache: gắn __cookies (đồng nhất với
+        # get_session_pure_request) để SessionProvider lưu lại tái dùng. Caller
+        # PHẢI strip __cookies trước khi broadcast SSE / persist DB.
+        try:
+            session_data["__cookies"] = await ctx.cookies("https://chatgpt.com/")
+        except Exception as exc:
+            log(f"[session] cookie export failed: {exc}")
         return session_data
 
     async def _run_camoufox_once(profile_dir: Any) -> dict[str, Any]:

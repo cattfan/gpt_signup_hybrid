@@ -28,7 +28,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
-use crate::bot::board::{render_board_html, JobBoard, LiveBoardCtl};
+use crate::bot::board::{JobBoard, JobStatus};
 use crate::bot::i18n::{self, Lang};
 use crate::bot::limiter::{AdmitDecision, MessageDecision, UserLimiter};
 use crate::bot::queue::{spawn_workers, Job, JobEvent, JobQueue, SubmitError, WorkerConfig};
@@ -58,7 +58,7 @@ struct Cli {
     max_concurrent: usize,
 
     /// Số tiến trình tối đa 1 user chạy đồng thời.
-    #[arg(long, env = "MAX_PER_USER", default_value = "2", global = true)]
+    #[arg(long, env = "MAX_PER_USER", default_value = "10", global = true)]
     max_per_user: u32,
 
     /// Hard cap số job pending trong queue. Khi đầy, job mới bị reject. Bảo vệ RAM.
@@ -66,7 +66,7 @@ struct Cli {
     queue_capacity: usize,
 
     /// Số lần retry approve (per job).
-    #[arg(long, env = "APPROVE_RETRIES", default_value = "200", global = true)]
+    #[arg(long, env = "APPROVE_RETRIES", default_value = "110", global = true)]
     approve_retries: u32,
 
     /// Restart threshold — số `result=exception` LIÊN TIẾP trước khi restart checkout. 0 = disabled.
@@ -128,11 +128,6 @@ struct Cli {
     /// HTTP timeout (seconds).
     #[arg(long, env = "HTTP_TIMEOUT", default_value = "60", global = true)]
     http_timeout: u64,
-
-    /// Chu kỳ refresh bảng `/board` (giây). Tối thiểu 2s để tránh flood
-    /// editMessageText (Telegram rate-limit). Không hardcode — opt-in qua env.
-    #[arg(long, env = "BOARD_REFRESH_SECS", default_value = "3", global = true)]
-    board_refresh_secs: u64,
 }
 
 #[derive(clap::Subcommand, Debug, Clone)]
@@ -220,6 +215,7 @@ fn localized_commands(lang: Lang, is_admin: bool) -> Vec<(&'static str, &'static
             ("start", "Bắt đầu / hướng dẫn"),
             ("status", "Trạng thái bot + hàng chờ"),
             ("stop", "Dừng tất cả tiến trình của bạn"),
+            ("board", "Bảng tiến trình + nút Dừng"),
             ("cancel", "Xóa bộ đệm văn bản đang chờ"),
             ("proxy_set", "Đặt proxy riêng của bạn"),
             ("proxy_remove", "Xóa proxy của bạn"),
@@ -231,6 +227,7 @@ fn localized_commands(lang: Lang, is_admin: bool) -> Vec<(&'static str, &'static
             ("start", "Start / instructions"),
             ("status", "Bot status + queue"),
             ("stop", "Stop all your processes"),
+            ("board", "Process board + Stop buttons"),
             ("cancel", "Clear pending text buffer"),
             ("proxy_set", "Set your own proxy"),
             ("proxy_remove", "Remove your proxy"),
@@ -247,7 +244,8 @@ fn localized_commands(lang: Lang, is_admin: bool) -> Vec<(&'static str, &'static
                 ("ban", "Cấm user (admin)"),
                 ("unban", "Gỡ cấm user (admin)"),
                 ("banlist", "Danh sách user bị cấm (admin)"),
-                ("board", "Bảng tiến trình realtime (admin)"),
+                ("stopall", "Dừng TẤT CẢ tiến trình mọi user (admin)"),
+                ("flushall", "Xóa sạch hàng chờ + board (admin)"),
                 ("proxy_login_set", "Đặt login proxy chung (admin)"),
                 ("proxy_login_remove", "Xóa login proxy chung (admin)"),
             ],
@@ -257,7 +255,8 @@ fn localized_commands(lang: Lang, is_admin: bool) -> Vec<(&'static str, &'static
                 ("ban", "Ban a user (admin)"),
                 ("unban", "Unban a user (admin)"),
                 ("banlist", "List banned users (admin)"),
-                ("board", "Live process board (admin)"),
+                ("stopall", "Stop ALL processes of all users (admin)"),
+                ("flushall", "Clear queue + board (admin)"),
                 ("proxy_login_set", "Set shared login proxy (admin)"),
                 ("proxy_login_remove", "Remove shared login proxy (admin)"),
             ],
@@ -363,7 +362,6 @@ async fn main() -> Result<()> {
     )));
     let registry = JobRegistry::new();
     let board = JobBoard::new();
-    let live_ctl = LiveBoardCtl::new();
     let limiter_for_done = limiter.clone();
     let registry_for_done = registry.clone();
     let on_done: Arc<dyn Fn(i64, u64) + Send + Sync> = Arc::new(move |user_id: i64, job_id: u64| {
@@ -406,6 +404,7 @@ async fn main() -> Result<()> {
         ("start", "Open menu / Mở menu"),
         ("status", "Bot status"),
         ("stop", "Stop my processes"),
+        ("board", "Process board / Bảng tiến trình"),
         ("settings", "Settings / Cài đặt"),
         ("language", "Language / Ngôn ngữ"),
         ("proxy_set", "Set your own proxy"),
@@ -431,7 +430,9 @@ async fn main() -> Result<()> {
             ("ban", "Ban user by @username/id (admin)"),
             ("unban", "Unban by @username/id (admin)"),
             ("banlist", "List banned users (admin)"),
-            ("board", "Live process table (admin)"),
+            ("board", "Process board + Stop buttons"),
+            ("stopall", "Stop ALL processes of all users (admin)"),
+            ("flushall", "Clear queue + board (admin)"),
             ("proxy_login_set", "Set shared login proxy (admin)"),
             ("proxy_login_remove", "Remove shared login proxy (admin)"),
         ];
@@ -461,7 +462,6 @@ async fn main() -> Result<()> {
                         let proxy_pool = proxy_pool.clone();
                         let cli = cli.clone();
                         let board = board.clone();
-                        let live_ctl = live_ctl.clone();
                         tokio::spawn(async move {
                             if let Err(e) = handle_message(
                                 tg,
@@ -475,7 +475,6 @@ async fn main() -> Result<()> {
                                 &proxy_pool,
                                 &cli,
                                 board,
-                                live_ctl,
                             )
                             .await
                             {
@@ -489,6 +488,7 @@ async fn main() -> Result<()> {
                         let store = store.clone();
                         let allowed = allowed_users.clone();
                         let admin_chat_id = cli.admin_chat_id;
+                        let board = board.clone();
                         tokio::spawn(async move {
                             if let Err(e) = handle_callback(
                                 tg,
@@ -498,6 +498,7 @@ async fn main() -> Result<()> {
                                 cb,
                                 &allowed,
                                 admin_chat_id,
+                                board,
                             )
                             .await
                             {
@@ -527,7 +528,6 @@ async fn handle_message(
     proxy_pool: &[String],
     cli: &Cli,
     board: JobBoard,
-    live_ctl: LiveBoardCtl,
 ) -> Result<()> {
     let user_id = msg.from.as_ref().map(|u| u.id).unwrap_or(0);
     let username = msg.from.as_ref().and_then(|u| u.username.clone());
@@ -658,6 +658,12 @@ async fn handle_message(
             .ok();
             return Ok(());
         }
+        if trimmed.starts_with("/board") {
+            // Board cho mọi user: admin xem toàn hệ thống, user thường CHỈ xem
+            // tiến trình của chính mình (bảo mật). Kèm nút Stop từng process.
+            handle_board(&tg, &board, msg.chat.id, user_id, is_admin, lang).await;
+            return Ok(());
+        }
         if trimmed.starts_with("/cancel") {
             session_buffer.lock().await.clear(msg.chat.id);
             tg.send_message(msg.chat.id, &i18n::stopped_all(lang, 0), None)
@@ -710,8 +716,8 @@ async fn handle_message(
         }
 
         match cmd_base {
-            "/notify" | "/chat" | "/ban" | "/unban" | "/banlist" | "/board"
-            | "/proxy_login_set" | "/proxy_login_remove" => {
+            "/notify" | "/chat" | "/ban" | "/unban" | "/banlist"
+            | "/proxy_login_set" | "/proxy_login_remove" | "/stopall" | "/flushall" => {
                 if !is_admin {
                     tg.send_message(
                         msg.chat.id,
@@ -736,15 +742,9 @@ async fn handle_message(
                     "/proxy_login_remove" => {
                         handle_proxy_login_remove(&tg, &store, &msg).await
                     }
-                    "/board" => {
-                        handle_board(
-                            tg.clone(),
-                            board.clone(),
-                            live_ctl.clone(),
-                            msg.chat.id,
-                            cli.board_refresh_secs,
-                        )
-                        .await
+                    "/stopall" => handle_stopall(&tg, &registry, msg.chat.id).await,
+                    "/flushall" => {
+                        handle_flushall(&tg, &registry, &session_buffer, &board, msg.chat.id).await
                     }
                     _ => unreachable!(),
                 }
@@ -764,39 +764,59 @@ async fn handle_message(
         // Text thường — append vào session buffer
         if !trimmed.is_empty() {
             // Auto-detect combo email|password|2fa (không phải JSON) → login HTTP.
+            // Hỗ trợ NHIỀU dòng: mỗi dòng = 1 tài khoản → 1 tiến trình riêng.
             if looks_like_combo_input(trimmed) {
-                match parse_account_combo(trimmed) {
-                    Some(combo) => {
-                        session_buffer.lock().await.clear(msg.chat.id);
-                        return process_account_combo(
-                            tg,
-                            queue,
-                            limiter,
-                            registry,
-                            store.clone(),
-                            msg.chat.id,
-                            msg.message_id,
-                            user_id,
-                            username,
-                            combo,
-                            proxy_pool,
-                            cli,
-                            board,
-                            lang,
-                        )
-                        .await;
-                    }
-                    None => {
-                        tg.send_message(
-                            msg.chat.id,
-                            &i18n::invalid_combo(lang),
-                            Some(msg.message_id),
-                        )
+                let (combos, invalid) = parse_account_combos(trimmed);
+                if combos.is_empty() {
+                    tg.send_message(msg.chat.id, &i18n::invalid_combo(lang), Some(msg.message_id))
                         .await
                         .ok();
-                        return Ok(());
+                    return Ok(());
+                }
+                session_buffer.lock().await.clear(msg.chat.id);
+
+                // Cap số dòng xử lý 1 lần = max tiến trình/user (chống flood khi
+                // dán quá nhiều dòng). Phần dư bị bỏ, báo rõ trong header.
+                let cap = cli.max_per_user.max(1) as usize;
+                let dropped = combos.len().saturating_sub(cap);
+                let combos: Vec<AccountCombo> = combos.into_iter().take(cap).collect();
+
+                if combos.len() > 1 || invalid > 0 || dropped > 0 {
+                    tg.send_message(
+                        msg.chat.id,
+                        &i18n::combo_batch_received(lang, combos.len(), invalid, dropped),
+                        Some(msg.message_id),
+                    )
+                    .await
+                    .ok();
+                }
+
+                // Mỗi tài khoản 1 job độc lập — admission (cap/user) + chống
+                // trùng tài khoản tự áp trong enqueue_and_track. Lỗi 1 dòng
+                // không chặn các dòng còn lại.
+                for combo in combos {
+                    if let Err(e) = process_account_combo(
+                        tg.clone(),
+                        queue.clone(),
+                        limiter.clone(),
+                        registry.clone(),
+                        store.clone(),
+                        msg.chat.id,
+                        msg.message_id,
+                        user_id,
+                        username.clone(),
+                        combo,
+                        proxy_pool,
+                        cli,
+                        board.clone(),
+                        lang,
+                    )
+                    .await
+                    {
+                        error!("process_account_combo (batch) error: {}", e);
                     }
                 }
+                return Ok(());
             }
             let result = {
                 let mut buf = session_buffer.lock().await;
@@ -913,8 +933,9 @@ async fn enqueue_and_track(
     board: JobBoard,
     lang: Lang,
 ) -> Result<()> {
-    // Admission: tối đa N tiến trình/user (mặc định 2).
-    match limiter.check_submit(user_id).await {
+    // Admission: tối đa N tiến trình/user (mặc định 10). try_admit RESERVE slot
+    // atomic ngay khi Allow → không còn khe TOCTOU với preflight proxy phía sau.
+    match limiter.try_admit(user_id).await {
         AdmitDecision::Allow => {}
         AdmitDecision::MaxConcurrent { max } => {
             tg.send_message(chat_id, &i18n::max_concurrent(lang, max), Some(reply_to))
@@ -930,8 +951,28 @@ async fn enqueue_and_track(
         }
     }
 
-    // ── Proxy resolution: login proxy (admin, global) + user proxy (private) ──
+    // ── Chống trùng tài khoản: 1 user không được chạy/queue cùng 1 email 2 lần.
+    // Đăng ký job NGAY (atomic) để giữ chỗ email_key trước mọi await (preflight
+    // proxy) → không có khe TOCTOU. Mọi đường return sớm sau đây PHẢI nhả cả
+    // reservation (limiter.release) lẫn entry registry (unregister).
     let masked_email = upi::runner::mask_email(&email);
+    let email_key = email.trim().to_lowercase();
+    let (job_id, cancel_token) = match registry.try_register(user_id, &email_key).await {
+        Some(v) => v,
+        None => {
+            limiter.release(user_id).await;
+            tg.send_message(
+                chat_id,
+                &i18n::duplicate_account(lang, &masked_email),
+                Some(reply_to),
+            )
+            .await
+            .ok();
+            return Ok(());
+        }
+    };
+
+    // ── Proxy resolution: login proxy (admin, global) + user proxy (private) ──
     let login_proxy_raw = store.get_login_proxy();
     let user_proxy_raw = match store.get_user_proxy(user_id) {
         Ok(v) => v,
@@ -1016,7 +1057,11 @@ async fn enqueue_and_track(
         }
     }
     if proxy_dead {
-        // Chưa register job, chưa mark_in_flight → chỉ báo user (và admin) rồi
+        // Đã reserve slot (try_admit) + try_register ở trên → phải nhả cả hai
+        // trước khi return, nếu không slot/email_key sẽ kẹt vĩnh viễn.
+        registry.unregister(user_id, job_id).await;
+        limiter.release(user_id).await;
+        // Chưa vào queue, chưa chạy → chỉ báo user (và admin) rồi
         // dừng. Không tốn slot/worker.
         tg.send_message(
             chat_id,
@@ -1047,9 +1092,9 @@ async fn enqueue_and_track(
         .ok();
     }
 
-    // Đăng ký job TRƯỚC để có job_id (u64) gắn vào nút Stop của tin.
+    // Đăng ký job đã thực hiện ở đầu hàm (try_register) — job_id/cancel_token
+    // đã có sẵn. Chỉ tạo channel sự kiện ở đây.
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<JobEvent>();
-    let (job_id, cancel_token) = registry.register(user_id).await;
     let qr_path = cli
         .qr_out_dir
         .join(format!("qr_{}_{}.png", user_id, job_id));
@@ -1097,7 +1142,8 @@ async fn enqueue_and_track(
 
     match queue.try_submit(job) {
         Ok(position) => {
-            limiter.mark_in_flight(user_id).await;
+            // Slot đã reserve ở try_admit — KHÔNG tăng lại. on_done → mark_done
+            // sẽ trả slot khi job kết thúc.
             board
                 .insert_queued(job_id, user_id, username_for_log.clone(), masked_email.clone())
                 .await;
@@ -1126,6 +1172,7 @@ async fn enqueue_and_track(
         }
         Err(SubmitError::QueueFull { pending, capacity }) => {
             registry.unregister(user_id, job_id).await;
+            limiter.release(user_id).await;
             tg.edit_message_text(chat_id, status_msg_id, &i18n::queue_full(lang, pending, capacity))
                 .await
                 .ok();
@@ -1133,6 +1180,7 @@ async fn enqueue_and_track(
         }
         Err(SubmitError::Closed) => {
             registry.unregister(user_id, job_id).await;
+            limiter.release(user_id).await;
             tg.edit_message_text(chat_id, status_msg_id, &i18n::queue_closed(lang))
                 .await
                 .ok();
@@ -1379,6 +1427,31 @@ fn parse_account_combo(text: &str) -> Option<AccountCombo> {
     })
 }
 
+/// Parse NHIỀU dòng combo `email|password|2fa` (mỗi dòng 1 tài khoản). Bỏ qua
+/// dòng rỗng, dedupe theo email (giữ lần đầu) để 1 lần dán không tạo 2 job
+/// trùng. Trả `(combos hợp lệ, số dòng sai định dạng)`.
+fn parse_account_combos(text: &str) -> (Vec<AccountCombo>, usize) {
+    let mut out: Vec<AccountCombo> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut invalid = 0usize;
+    for line in text.lines() {
+        let l = line.trim();
+        if l.is_empty() {
+            continue;
+        }
+        match parse_account_combo(l) {
+            Some(c) => {
+                let key = c.email.trim().to_lowercase();
+                if seen.insert(key) {
+                    out.push(c);
+                }
+            }
+            None => invalid += 1,
+        }
+    }
+    (out, invalid)
+}
+
 /// Nhận session.json (file hoặc paste text) → build job với session có sẵn.
 #[allow(clippy::too_many_arguments)]
 async fn process_session_json(
@@ -1418,12 +1491,24 @@ async fn process_session_json(
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let email = session_json
+    // Session BẮT BUỘC có email thật (user.email) — đây là khóa định danh để
+    // chống trùng tài khoản. Không fallback "unknown@unknown" (sẽ làm dedupe sai
+    // và job vô danh). Thiếu/email sai định dạng → từ chối, báo user.
+    let email = match session_json
         .get("user")
         .and_then(|u| u.get("email"))
         .and_then(|e| e.as_str())
-        .unwrap_or("unknown@unknown")
-        .to_string();
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty() && s.contains('@'))
+    {
+        Some(e) => e.to_string(),
+        None => {
+            tg.send_message(chat_id, &i18n::session_no_email(lang), Some(reply_to))
+                .await
+                .ok();
+            return Ok(());
+        }
+    };
     let cookie_header = build_cookie_header(&session_json);
 
     enqueue_and_track(
@@ -1499,82 +1584,138 @@ fn now_hms() -> String {
         .to_string()
 }
 
-/// `/board` (admin) — bật bảng trạng thái realtime. Gửi 1 rich message rồi
-/// spawn task refresh mỗi `refresh_secs` giây tới khi board rỗng quá lâu thì
-/// tự dừng (chống task sống vô hạn). `LiveBoardCtl` đảm bảo chỉ 1 task chạy.
-async fn handle_board(
-    tg: Arc<TelegramClient>,
-    board: JobBoard,
-    live_ctl: LiveBoardCtl,
+/// `/stopall` (admin) — cancel MỌI job của MỌI user. Slot limiter tự trả qua
+/// `on_done` khi worker xử lý xong các job đã cancel.
+async fn handle_stopall(tg: &Arc<TelegramClient>, registry: &JobRegistry, chat_id: i64) {
+    let n = registry.stop_everyone().await;
+    tg.send_message(
+        chat_id,
+        &format!("🛑 Stopped {} process(es) across all users.", n),
+        None,
+    )
+    .await
+    .ok();
+}
+
+/// `/flushall` (admin) — reset toàn bộ trạng thái tạm: cancel mọi job, xóa
+/// board + buffer text đang chờ. KHÔNG zero cứng counter limiter (slot trả tự
+/// nhiên qua `on_done`) để tránh lệch số đếm.
+async fn handle_flushall(
+    tg: &Arc<TelegramClient>,
+    registry: &JobRegistry,
+    session_buffer: &Arc<tokio::sync::Mutex<SessionBuffer>>,
+    board: &JobBoard,
     chat_id: i64,
-    refresh_secs: u64,
 ) {
-    if !live_ctl.try_activate() {
-        tg.send_message(
-            chat_id,
-            "📊 Board đang chạy rồi — chỉ 1 bảng live tại một thời điểm.",
-            None,
-        )
-        .await
-        .ok();
-        return;
+    let jobs = registry.stop_everyone().await;
+    let cards = board.clear_all().await;
+    let buffers = session_buffer.lock().await.clear_all();
+    tg.send_message(
+        chat_id,
+        &format!(
+            "🧹 Flushed all.\n• Cancelled jobs: {}\n• Board entries cleared: {}\n• Pending text buffers cleared: {}",
+            jobs, cards, buffers
+        ),
+        None,
+    )
+    .await
+    .ok();
+}
+
+/// Số nút Stop tối đa render trên 1 board (chống vượt giới hạn inline keyboard
+/// của Telegram). Danh sách text vẫn liệt kê đủ; nút chỉ cho N process đầu.
+const BOARD_STOP_BTN_CAP: usize = 25;
+
+/// Render board thành text. `scope_all` = true: admin xem toàn hệ thống;
+/// false: chỉ tiến trình của viewer.
+fn render_board_text(entries: &[(u64, JobStatus)], scope_all: bool, lang: Lang) -> String {
+    use crate::bot::board::JobState;
+    let running = entries
+        .iter()
+        .filter(|(_, s)| s.state == JobState::Running)
+        .count();
+    let queued = entries.len() - running;
+    let mut out = i18n::board_header(lang, running, queued, scope_all, &now_hms());
+    if entries.is_empty() {
+        out.push_str(&i18n::board_empty(lang, scope_all));
+        return out;
     }
+    for (i, (_, s)) in entries.iter().enumerate() {
+        let age = crate::bot::board::fmt_age(s.since.elapsed().as_secs());
+        let step = if s.step.is_empty() {
+            "—".to_string()
+        } else {
+            crate::bot::board::truncate_chars(&s.step, 32)
+        };
+        // Admin thấy thêm chủ sở hữu; user không cần (đều của mình).
+        let who = if scope_all {
+            match s.username.as_deref() {
+                Some(u) if !u.is_empty() => format!(" @{}", u),
+                _ => format!(" id{}", s.user_id),
+            }
+        } else {
+            String::new()
+        };
+        out.push_str(&format!(
+            "\n{}. {} {}{}  ⏱{} · {}",
+            i + 1,
+            s.state.icon(),
+            s.email_masked,
+            who,
+            age,
+            step,
+        ));
+    }
+    out
+}
 
-    let interval = Duration::from_secs(refresh_secs.max(2));
-    let now = std::time::Instant::now();
-    let snapshot = board.snapshot().await;
-    let html = render_board_html(&snapshot, now, &now_hms());
+/// Keyboard board: 1 nút Stop / process (cap) + nút Refresh.
+fn board_keyboard(entries: &[(u64, JobStatus)], lang: Lang) -> Value {
+    let mut rows: Vec<Value> = Vec::new();
+    for (job_id, s) in entries.iter().take(BOARD_STOP_BTN_CAP) {
+        rows.push(serde_json::json!([{
+            "text": i18n::btn_board_stop(lang, &s.email_masked),
+            "callback_data": format!("bstop:{}", job_id),
+        }]));
+    }
+    rows.push(serde_json::json!([{
+        "text": i18n::btn_board_refresh(lang),
+        "callback_data": "board:refresh",
+    }]));
+    Value::Array(rows)
+}
 
-    let message_id = match tg.send_rich_message(chat_id, &html).await {
-        Ok(id) => id,
-        Err(e) => {
-            live_ctl.deactivate();
-            tg.send_message(chat_id, &format!("❌ Không gửi được board: {}", e), None)
-                .await
-                .ok();
-            return;
-        }
+/// Lấy snapshot (admin = tất cả, user = riêng) rồi build (text, keyboard).
+/// Filter theo `viewer` khi không phải admin → KHÔNG lộ tiến trình người khác.
+async fn build_board_view(
+    board: &JobBoard,
+    viewer: i64,
+    is_admin: bool,
+    lang: Lang,
+) -> (String, Value) {
+    let entries = if is_admin {
+        board.snapshot_entries().await
+    } else {
+        board.snapshot_entries_for_user(viewer).await
     };
+    let text = render_board_text(&entries, is_admin, lang);
+    let kb = board_keyboard(&entries, lang);
+    (text, kb)
+}
 
-    tokio::spawn(async move {
-        let mut last_html = html;
-        let mut idle_ticks: u32 = 0;
-        // Board rỗng liên tục ~120s → dừng task, giải phóng cờ.
-        let max_idle_ticks = (120 / interval.as_secs().max(1)).max(1) as u32;
-        let mut ticker = tokio::time::interval(interval);
-        ticker.tick().await; // tick đầu fire ngay — bỏ.
-        loop {
-            ticker.tick().await;
-            let now = std::time::Instant::now();
-            let snapshot = board.snapshot().await;
-            let empty = snapshot.is_empty();
-            let html = render_board_html(&snapshot, now, &now_hms());
-
-            if empty {
-                idle_ticks += 1;
-            } else {
-                idle_ticks = 0;
-            }
-
-            // Dedupe: chỉ edit khi nội dung đổi (tránh flood + "not modified").
-            if html != last_html {
-                if let Err(e) = tg.edit_rich_message(chat_id, message_id, &html).await {
-                    tracing::warn!("board edit fail: {}", e);
-                }
-                last_html = html;
-            }
-
-            if idle_ticks >= max_idle_ticks {
-                let stopped = format!(
-                    "{}<p><i>⏹ Board đã dừng (không có process). Gõ /board để mở lại.</i></p>",
-                    last_html
-                );
-                tg.edit_rich_message(chat_id, message_id, &stopped).await.ok();
-                break;
-            }
-        }
-        live_ctl.deactivate();
-    });
+/// `/board` — bảng tiến trình kèm nút Stop. Admin xem toàn hệ thống; user
+/// thường CHỈ thấy tiến trình của chính mình (bảo mật). Snapshot tĩnh + nút
+/// 🔄 Refresh để cập nhật.
+async fn handle_board(
+    tg: &Arc<TelegramClient>,
+    board: &JobBoard,
+    chat_id: i64,
+    viewer: i64,
+    is_admin: bool,
+    lang: Lang,
+) {
+    let (text, kb) = build_board_view(board, viewer, is_admin, lang).await;
+    tg.send_message_kb(chat_id, &text, None, kb).await.ok();
 }
 
 fn build_cookie_header(session_json: &Value) -> String {
@@ -1801,6 +1942,7 @@ async fn handle_callback(
     cb: CallbackQuery,
     allowed: &HashSet<i64>,
     admin_chat_id: i64,
+    board: JobBoard,
 ) -> Result<()> {
     let user_id = cb.from.id;
     let is_admin = admin_chat_id != 0 && user_id == admin_chat_id;
@@ -1846,6 +1988,41 @@ async fn handle_callback(
             let ok = registry.stop_job(user_id, job_id).await;
             let toast = if ok { i18n::stopped_this(lang) } else { i18n::stop_not_found(lang) };
             tg.answer_callback_query(&cb.id, Some(&toast)).await.ok();
+        } else {
+            tg.answer_callback_query(&cb.id, None).await.ok();
+        }
+        return Ok(());
+    }
+
+    // Board: làm mới snapshot (admin = toàn hệ thống; user = riêng).
+    if data == "board:refresh" {
+        let message_id = cb.message.as_ref().map(|m| m.message_id).unwrap_or(0);
+        if message_id != 0 {
+            let (text, kb) = build_board_view(&board, user_id, is_admin, lang).await;
+            tg.edit_message_text_kb(chat_id, message_id, &text, kb).await.ok();
+        }
+        tg.answer_callback_query(&cb.id, None).await.ok();
+        return Ok(());
+    }
+
+    // Board: nút Stop 1 process. Admin dừng được job bất kỳ; user thường CHỈ
+    // dừng job của mình — `stop_job` verify ownership theo user_id nên user
+    // KHÔNG thể dừng job người khác kể cả khi forge job_id (bảo mật).
+    if let Some(id_str) = data.strip_prefix("bstop:") {
+        if let Ok(job_id) = id_str.parse::<u64>() {
+            let ok = if is_admin {
+                registry.stop_job_any(job_id).await
+            } else {
+                registry.stop_job(user_id, job_id).await
+            };
+            tg.answer_callback_query(&cb.id, Some(&i18n::board_stopped_toast(lang, ok)))
+                .await
+                .ok();
+            let message_id = cb.message.as_ref().map(|m| m.message_id).unwrap_or(0);
+            if message_id != 0 {
+                let (text, kb) = build_board_view(&board, user_id, is_admin, lang).await;
+                tg.edit_message_text_kb(chat_id, message_id, &text, kb).await.ok();
+            }
         } else {
             tg.answer_callback_query(&cb.id, None).await.ok();
         }
@@ -2780,6 +2957,7 @@ async fn send_help(
              /start — mở menu / hướng dẫn\n\
              /status — trạng thái bot + hàng chờ\n\
              /stop — dừng TẤT CẢ tiến trình của bạn\n\
+             /board — bảng tiến trình của bạn + nút Dừng\n\
              /cancel — xóa bộ đệm văn bản đang chờ\n\
              /proxy_set <line> — đặt proxy riêng của bạn\n\
              /proxy_remove — xóa proxy của bạn\n\
@@ -2794,6 +2972,7 @@ async fn send_help(
              /start — open menu / instructions\n\
              /status — bot status + queue\n\
              /stop — stop ALL your processes\n\
+             /board — your process board + Stop buttons\n\
              /cancel — clear pending text buffer\n\
              /proxy_set <line> — set your own proxy\n\
              /proxy_remove — remove your proxy\n\
@@ -2810,7 +2989,8 @@ async fn send_help(
              /ban <@user | id> [lý do] — cấm theo user_id\n\
              /unban <@user | id> — gỡ cấm\n\
              /banlist — danh sách user bị cấm\n\
-             /board — bảng tiến trình realtime\n\
+             /stopall — dừng TẤT CẢ tiến trình của mọi user\n\
+             /flushall — xóa sạch hàng chờ + board + buffer\n\
              /proxy_login_set <line> — đặt login proxy chung (áp segment login mọi user)\n\
              /proxy_login_remove — xóa login proxy chung\n"
         } else {
@@ -2820,7 +3000,8 @@ async fn send_help(
              /ban <@user | id> [reason] — ban by user_id\n\
              /unban <@user | id> — unban\n\
              /banlist — list banned users\n\
-             /board — live process table\n\
+             /stopall — stop ALL processes of all users\n\
+             /flushall — clear queue + board + buffers\n\
              /proxy_login_set <line> — set shared login proxy (login segment for all users)\n\
              /proxy_login_remove — remove shared login proxy\n"
         });

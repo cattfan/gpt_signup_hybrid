@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
 from time import monotonic
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 from user_agent_profile import (
     CURL_IMPERSONATE_PRIMARY as _IMPERSONATE,
@@ -1578,6 +1578,8 @@ async def run_upi_qr_probe(
     approve_retry_delay: float | None = None,
     relogin_block_streak: int = 0,
     auth_sink: dict[str, Any] | None = None,
+    login_fn: Callable[..., Awaitable[dict[str, Any]]] | None = None,
+    force_fresh: bool = False,
 ) -> UpiQrResult:
     """Login + checkout + confirm UPI + approve loop → save QR PNG.
 
@@ -1721,7 +1723,7 @@ async def run_upi_qr_probe(
     import stripe_token as _st
     from pay_upi_http import _stripe_init
     from random_profile import random_india_profile
-    from session_phase import SessionError, get_session_pure_request
+    from session_phase import SessionError, get_session_pure_request, is_fatal_login_error
 
     # ─────────────────────────────────────────────────────────────────
     # Step 1 — login với retry. SessionError dạng "WARNING_BANNER" /
@@ -1733,19 +1735,9 @@ async def run_upi_qr_probe(
     # ─────────────────────────────────────────────────────────────────
     LOGIN_MAX_ATTEMPTS = 3
     LOGIN_RETRY_DELAY = 3.0
-    NON_RETRYABLE_PATTERNS = (
-        "password verify failed",
-        "mfa verify failed",
-        "no mail_provider available",
-        "no secret provided",
-        "yêu cầu 2fa nhưng không có",
-        "otp polling returned empty",
-        "passwordless otp login but no mail_provider",
-    )
 
     def _is_login_error_retryable(exc_msg: str) -> bool:
-        lower = exc_msg.lower()
-        return not any(pat in lower for pat in NON_RETRYABLE_PATTERNS)
+        return not is_fatal_login_error(exc_msg)
 
     _safe_log(_fmt_step("1/6", "login", "start", "pure-HTTP request_phase"))
     session_data: dict[str, Any] | None = None
@@ -1757,13 +1749,19 @@ async def run_upi_qr_probe(
     login_proxy = first_proxy if (proxy_from_step <= 1 and first_proxy) else None
     for login_attempt in range(1, LOGIN_MAX_ATTEMPTS + 1):
         try:
-            session_data = await get_session_pure_request(
-                email=email,
-                password=password,
-                secret=secret,
-                proxy=login_proxy,
-                log=_safe_log,
-            )
+            if login_fn is not None:
+                # SessionProvider: reuse cookie cũ (revalidate HTTP) → bỏ qua login.
+                # force_fresh=True (cycle re-login đổi IP) → provider bỏ reuse, login mới.
+                # proxy=login_proxy: tôn trọng proxy_from_step (login direct khi >1).
+                session_data = await login_fn(force_fresh=force_fresh, proxy=login_proxy)
+            else:
+                session_data = await get_session_pure_request(
+                    email=email,
+                    password=password,
+                    secret=secret,
+                    proxy=login_proxy,
+                    log=_safe_log,
+                )
             if login_attempt > 1:
                 _safe_log(
                     f"[upi-qr] login OK ở attempt {login_attempt}/{LOGIN_MAX_ATTEMPTS}"

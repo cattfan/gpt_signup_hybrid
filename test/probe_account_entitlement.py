@@ -255,7 +255,7 @@ async def _main_async(args: argparse.Namespace) -> int:
     print("    CI log; output đã scrub mọi chuỗi prefix 'eyJ'. KHÔNG paste output có token.")
     print()
 
-    # Nguồn token: --export-file (file runtime/upi_tokens/<email>.json do UPI
+    # Nguồn token: --export-file (file runtime/session_cache/<instance>/<slug>.json do UPI
     # job ghi ra) > stdin/env. File là local + gitignored → token KHÔNG qua argv.
     export_cookies: Any = None
     export_proxy: str | None = None
@@ -266,7 +266,7 @@ async def _main_async(args: argparse.Namespace) -> int:
             print(f"✗ Đọc export-file lỗi: {exc}")
             return 2
         access_token = (ed.get("access_token") or "").strip()
-        export_cookies = ed.get("session_cookies")
+        export_cookies = ed.get("session_cookies") or ed.get("cookies")  # chấp nhận cả 2 key
         export_proxy = ed.get("proxy")
         print(
             f"  (export-file: {args.export_file} — email={ed.get('email')!r} "
@@ -361,7 +361,7 @@ def main() -> int:
     parser.add_argument("--impersonate", default=None, help="curl_cffi impersonate token")
     parser.add_argument(
         "--export-file", default=None,
-        help="file runtime/upi_tokens/<email>.json (UPI job ghi) — lấy token+proxy+cookies, KHÔNG cần stdin",
+        help="file runtime/session_cache/<instance>/<slug>.json (UPI job ghi) — lấy token+proxy+cookies, KHÔNG cần stdin",
     )
     parser.add_argument(
         "--no-proxy-skip", action="store_true",

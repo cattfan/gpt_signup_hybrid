@@ -27,16 +27,10 @@ pub enum JobState {
 }
 
 impl JobState {
-    fn icon(self) -> &'static str {
+    pub fn icon(self) -> &'static str {
         match self {
             JobState::Queued => "⏳",
             JobState::Running => "▶️",
-        }
-    }
-    fn label(self) -> &'static str {
-        match self {
-            JobState::Queued => "queue",
-            JobState::Running => "run",
         }
     }
 }
@@ -110,38 +104,54 @@ impl JobBoard {
         self.inner.lock().await.remove(&job_id);
     }
 
-    /// Snapshot sắp xếp ổn định: Running trước Queued, rồi theo tuổi giảm dần
-    /// (job lâu nhất lên đầu). Clone để render không giữ lock.
-    pub async fn snapshot(&self) -> Vec<JobStatus> {
+    /// Xóa SẠCH board (admin `/flushall`). Trả số entry đã xóa.
+    pub async fn clear_all(&self) -> usize {
+        let mut g = self.inner.lock().await;
+        let n = g.len();
+        g.clear();
+        n
+    }
+
+    /// Snapshot kèm `job_id`, sắp xếp ổn định: Running trước Queued, rồi theo
+    /// tuổi giảm dần. Clone để render không giữ lock.
+    pub async fn snapshot_entries(&self) -> Vec<(u64, JobStatus)> {
         let g = self.inner.lock().await;
-        let mut out: Vec<JobStatus> = g.values().cloned().collect();
-        out.sort_by(|a, b| match (a.state, b.state) {
-            (JobState::Running, JobState::Queued) => std::cmp::Ordering::Less,
-            (JobState::Queued, JobState::Running) => std::cmp::Ordering::Greater,
-            _ => b.since.cmp(&a.since).reverse(),
-        });
+        let mut out: Vec<(u64, JobStatus)> = g.iter().map(|(k, v)| (*k, v.clone())).collect();
+        sort_entries(&mut out);
         out
+    }
+
+    /// Như `snapshot_entries` nhưng CHỈ job của `user_id` — dùng cho `/board`
+    /// của user thường (bảo mật: không lộ tiến trình của người khác).
+    pub async fn snapshot_entries_for_user(&self, user_id: i64) -> Vec<(u64, JobStatus)> {
+        let g = self.inner.lock().await;
+        let mut out: Vec<(u64, JobStatus)> = g
+            .iter()
+            .filter(|(_, v)| v.user_id == user_id)
+            .map(|(k, v)| (*k, v.clone()))
+            .collect();
+        sort_entries(&mut out);
+        out
+    }
+
+    /// Chủ sở hữu (user_id) của 1 job — dùng để verify quyền khi cần.
+    #[allow(dead_code)]
+    pub async fn owner_of(&self, job_id: u64) -> Option<i64> {
+        self.inner.lock().await.get(&job_id).map(|s| s.user_id)
     }
 }
 
-/// Escape ký tự đặc biệt HTML cho rich message (tránh vỡ định dạng / API từ chối).
-fn html_escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&apos;"),
-            _ => out.push(c),
-        }
-    }
-    out
+/// Sắp xếp entries: Running trước Queued, rồi job lâu nhất lên đầu.
+fn sort_entries(out: &mut [(u64, JobStatus)]) {
+    out.sort_by(|a, b| match (a.1.state, b.1.state) {
+        (JobState::Running, JobState::Queued) => std::cmp::Ordering::Less,
+        (JobState::Queued, JobState::Running) => std::cmp::Ordering::Greater,
+        _ => b.1.since.cmp(&a.1.since).reverse(),
+    });
 }
 
 /// Cắt chuỗi theo số ký tự (char-safe), thêm '…' nếu bị cắt.
-fn truncate_chars(s: &str, max: usize) -> String {
+pub fn truncate_chars(s: &str, max: usize) -> String {
     let trimmed = s.trim();
     if trimmed.chars().count() <= max {
         return trimmed.to_string();
@@ -152,7 +162,7 @@ fn truncate_chars(s: &str, max: usize) -> String {
 }
 
 /// Định dạng tuổi job dạng mm:ss (hoặc h:mm:ss khi >= 1 giờ).
-fn fmt_age(secs: u64) -> String {
+pub fn fmt_age(secs: u64) -> String {
     let h = secs / 3600;
     let m = (secs % 3600) / 60;
     let s = secs % 60;
@@ -160,92 +170,5 @@ fn fmt_age(secs: u64) -> String {
         format!("{}:{:02}:{:02}", h, m, s)
     } else {
         format!("{:02}:{:02}", m, s)
-    }
-}
-
-/// Render snapshot thành rich-message HTML (heading + table). `now` truyền vào
-/// để tính tuổi nhất quán trong 1 lần render. `clock` = nhãn giờ hiển thị.
-pub fn render_board_html(snapshot: &[JobStatus], now: Instant, clock: &str) -> String {
-    let running = snapshot
-        .iter()
-        .filter(|s| s.state == JobState::Running)
-        .count();
-    let queued = snapshot.len() - running;
-
-    let mut html = String::with_capacity(256 + snapshot.len() * 160);
-    html.push_str(&format!(
-        "<h3>📊 Processes đang chạy</h3><p>▶️ {} run · ⏳ {} queue · 🕒 {}</p>",
-        running,
-        queued,
-        html_escape(clock),
-    ));
-
-    if snapshot.is_empty() {
-        html.push_str("<p><i>Không có process nào đang chạy.</i></p>");
-        return html;
-    }
-
-    html.push_str(
-        "<table bordered striped>\
-         <tr><th>#</th><th>User</th><th>Email</th><th>State</th><th>Step</th><th>Age</th></tr>",
-    );
-
-    for (i, s) in snapshot.iter().enumerate() {
-        let user_cell = match s.username.as_deref() {
-            Some(u) if !u.is_empty() => format!("@{}", html_escape(u)),
-            _ => format!("id{}", s.user_id),
-        };
-        let step_cell = if s.step.is_empty() {
-            "—".to_string()
-        } else {
-            html_escape(&truncate_chars(&s.step, 40))
-        };
-        let age = fmt_age(now.saturating_duration_since(s.since).as_secs());
-
-        html.push_str(&format!(
-            "<tr><td>{}</td><td>{}</td><td><code>{}</code></td><td>{} {}</td><td>{}</td><td>{}</td></tr>",
-            i + 1,
-            user_cell,
-            html_escape(&s.email_masked),
-            s.state.icon(),
-            s.state.label(),
-            step_cell,
-            age,
-        ));
-    }
-
-    html.push_str("</table>");
-    html
-}
-
-/// Cờ chống chạy nhiều task refresh `/board` cùng lúc. `/board` chỉ spawn task
-/// mới khi đang inactive; task tự `deactivate` khi thoát (board rỗng quá lâu).
-#[derive(Clone)]
-pub struct LiveBoardCtl {
-    active: Arc<std::sync::atomic::AtomicBool>,
-}
-
-impl LiveBoardCtl {
-    pub fn new() -> Self {
-        Self {
-            active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        }
-    }
-
-    /// Thử bật. Trả `true` nếu vừa chuyển từ inactive → active (được phép
-    /// spawn task). `false` nếu đã có task đang chạy.
-    pub fn try_activate(&self) -> bool {
-        self.active
-            .compare_exchange(
-                false,
-                true,
-                std::sync::atomic::Ordering::SeqCst,
-                std::sync::atomic::Ordering::SeqCst,
-            )
-            .is_ok()
-    }
-
-    pub fn deactivate(&self) {
-        self.active.store(false, std::sync::atomic::Ordering::SeqCst);
     }
 }

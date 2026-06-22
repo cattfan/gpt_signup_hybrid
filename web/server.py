@@ -98,6 +98,29 @@ async def on_startup():
     from .telegram_notifier import get_telegram_notifier
     get_telegram_notifier().apply_settings(all_settings)
 
+    # ── Session cache (feature: session-cookie-cache) ──
+    # SessionStore per-instance (cô lập theo db stem) + SessionProvider singleton.
+    # Seed một lần từ session_results (row có cookie session-token) → tái dùng ngay.
+    try:
+        from pathlib import Path as _Path
+        from config import load_settings as _load_settings
+        from session_store import SessionStore
+        from session_provider import (
+            SessionProvider,
+            set_session_provider,
+            seed_from_session_results,
+        )
+
+        _store = SessionStore(
+            instance_id=_Path(_engine.db_path).stem,
+            runtime_dir=_load_settings().runtime_dir,
+        )
+        set_session_provider(SessionProvider(_store, settings_repo=settings_repo))
+        seeded = seed_from_session_results(_store, session_repo, log=_log.info)
+        _log.info("session-cache: store instance=%s, seeded=%d", _store.instance_id, seeded)
+    except Exception as exc:  # noqa: BLE001 — feature degrade an toàn, không chặn startup
+        _log.warning("session-cache init failed (degrade to per-flow login): %s", exc)
+
     _log.info("startup: SQLite engine initialized, settings hydrated, job recovery done")
 
     # ── Register SseMux snapshot functions (Requirements 5.1, 5.2, 5.3) ──

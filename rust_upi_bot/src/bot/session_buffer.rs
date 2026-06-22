@@ -79,6 +79,13 @@ impl SessionBuffer {
         self.entries.remove(&chat_id);
     }
 
+    /// Xóa SẠCH mọi buffer đang chờ (admin `/flushall`). Trả số buffer đã xóa.
+    pub fn clear_all(&mut self) -> usize {
+        let n = self.entries.len();
+        self.entries.clear();
+        n
+    }
+
     /// Vacuum entries quá hạn (gọi định kỳ).
     pub fn vacuum(&mut self) {
         let now = Instant::now();

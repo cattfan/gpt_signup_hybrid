@@ -230,6 +230,21 @@ def run() -> int:
                  code == "999999" and used == 1 and resend_calls["n"] == 1,
                  f"code={code} used={used} resend_calls={resend_calls['n']}")
 
+        # TC-07: prefer_second_code — có 2 mã ở lần fetch đầu → submit mã THỨ 2
+        # trước, mã đầu giữ pending fallback.
+        thr["v"] = 100.0  # không resend
+        mail = FakeMail(["AAAAAA"], {"*": ["AAAAAA", "BBBBBB"]})
+        pending = []
+        tried = set()
+        code, used = rp._acquire_fresh_otp(
+            session=None, device_id="d", mail_provider=mail, request=_make_request(),
+            log=_log, loop=loop, started_at=started, tried_codes=tried, pending=pending,
+            max_resends=0, prefer_second_code=True,
+        )
+        ok_07 = code == "BBBBBB" and pending == ["AAAAAA"] and used == 0
+        _result("TC-07 prefer-second-code", ok_07,
+                 f"code={code} pending={pending} used={used}")
+
     finally:
         loop.close()
         rp._step_resend_otp = orig_resend
@@ -237,7 +252,7 @@ def run() -> int:
         rp.random.uniform = orig_uniform
         time.sleep = orig_sleep
 
-    total = 6
+    total = 7
     print(f"--- {total - _failures}/{total} PASS ---", flush=True)
     return 1 if _failures else 0
 

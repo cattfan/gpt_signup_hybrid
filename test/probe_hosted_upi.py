@@ -58,13 +58,14 @@ def _materialize_proxy(raw: str | None) -> str | None:
 
 
 def _load_latest_token() -> dict | None:
-    """Pick token export mới nhất trong runtime/upi_tokens/ để reuse access_token.
+    """Pick token export mới nhất trong runtime/session_cache/<instance>/ để reuse access_token.
 
     Cho phép probe Stripe hosted-UPI mà KHÔNG cần login lại (token ChatGPT JWT
     thường sống vài giờ). TOKEN_FILE env override file cụ thể.
     """
     override = os.environ.get("TOKEN_FILE", "").strip()
-    tok_dir = ROOT / "runtime" / "upi_tokens"
+    from session_store import resolve_instance_id
+    tok_dir = ROOT / "runtime" / "session_cache" / resolve_instance_id()
     if override:
         p = Path(override)
         if not p.is_absolute():

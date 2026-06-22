@@ -904,6 +904,7 @@ def _acquire_fresh_otp(
     tried_codes: set[str],
     pending: list[str],
     max_resends: int,
+    prefer_second_code: bool = False,
 ) -> tuple[str, int]:
     """Lấy 1 OTP code chưa nằm trong ``tried_codes`` — mirror vòng poll đầu của
     ``browser_phase._run_signup_flow``.
@@ -923,6 +924,11 @@ def _acquire_fresh_otp(
 
     Mutates ``pending`` in-place. Trả ``(code, resends_used)``. Raise
     ``RequestPhaseError`` khi hết ``otp_timeout_seconds`` mà không có code mới.
+
+    ``prefer_second_code``: khi mailbox có ≥2 mã ở lần fetch đầu, submit mã THỨ 2
+        (mã "sau") trước, mã đầu giữ lại trong ``pending`` làm fallback. Dùng cho
+        lần poll đầu — iCloud worker đôi khi thiếu ``date`` nên thứ tự không chắc
+        mới→cũ; thực tế mã thứ 2 thường là mã hợp lệ.
     """
     recipient = request.source_email or request.email
     poll_interval = max(5.0, request.otp_poll_interval_seconds)
@@ -998,7 +1004,14 @@ def _acquire_fresh_otp(
                 fresh.insert(0, candidate)
             if len(fresh) > 1:
                 log(f"[request] nhận {len(fresh)} OTP codes mới: {', '.join(fresh)}")
-            first = fresh.pop(0)
+            # prefer_second_code: có ≥2 mã ở lần fetch đầu → lấy mã THỨ 2 ("mã sau")
+            # trước; mã đầu giữ lại pending làm fallback. Thứ tự worker không chắc
+            # mới→cũ (thiếu date) nên mã thứ 2 thường mới là mã hợp lệ.
+            if prefer_second_code and len(fresh) >= 2:
+                first = fresh.pop(1)
+                log(f"[request] ưu tiên submit mã thứ 2 ({first}), giữ {fresh[0]} fallback")
+            else:
+                first = fresh.pop(0)
             pending[:] = fresh
             return first, resend_count
 
@@ -1273,6 +1286,7 @@ def _run_request_phase_sync(
                 request=request, log=log, loop=_loop, started_at=otp_started_at,
                 tried_codes=tried_codes, pending=pending_codes,
                 max_resends=total_resend_budget - resends_used,
+                prefer_second_code=True,
             )
             resends_used += used
 

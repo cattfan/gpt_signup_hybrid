@@ -318,53 +318,6 @@ impl TelegramClient {
         Ok(())
     }
 
-    /// Gửi Rich Message (Bot API 10.1) — body `{chat_id, rich_message:{html}}`.
-    /// Trả về `message_id` để edit về sau (bảng realtime). `html` phải đã
-    /// escape các ký tự đặc biệt ở phía caller.
-    pub async fn send_rich_message(&self, chat_id: i64, html: &str) -> Result<i64> {
-        let url = format!("{}/sendRichMessage", self.base_url);
-        let body = json!({
-            "chat_id": chat_id,
-            "rich_message": { "html": html },
-        });
-        let resp = self.http.post(&url).json(&body).send().await?;
-        let v: Value = resp.json().await?;
-        if v.get("ok").and_then(|b| b.as_bool()) != Some(true) {
-            return Err(anyhow!(
-                "sendRichMessage fail: {}",
-                v.get("description").and_then(|s| s.as_str()).unwrap_or("?")
-            ));
-        }
-        Ok(v["result"]["message_id"].as_i64().unwrap_or(0))
-    }
-
-    /// Sửa Rich Message đã gửi (`editMessageText` + tham số `rich_message`).
-    /// `message is not modified` được coi là OK (no-op) — caller đã dedupe nội
-    /// dung nên trường hợp này chỉ xảy ra do race, không phải lỗi thật.
-    pub async fn edit_rich_message(
-        &self,
-        chat_id: i64,
-        message_id: i64,
-        html: &str,
-    ) -> Result<()> {
-        let url = format!("{}/editMessageText", self.base_url);
-        let body = json!({
-            "chat_id": chat_id,
-            "message_id": message_id,
-            "rich_message": { "html": html },
-        });
-        let resp = self.http.post(&url).json(&body).send().await?;
-        let v: Value = resp.json().await?;
-        if v.get("ok").and_then(|b| b.as_bool()) != Some(true) {
-            let desc = v.get("description").and_then(|s| s.as_str()).unwrap_or("?");
-            if desc.contains("message is not modified") {
-                return Ok(());
-            }
-            return Err(anyhow!("editMessageText(rich) fail: {}", desc));
-        }
-        Ok(())
-    }
-
     pub async fn send_photo(
         &self,
         chat_id: i64,

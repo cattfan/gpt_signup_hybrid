@@ -32,7 +32,8 @@ def _log(step: str, msg: str) -> None:
 
 def _load_latest_token() -> dict | None:
     override = os.environ.get("TOKEN_FILE", "").strip()
-    tok_dir = ROOT / "runtime" / "upi_tokens"
+    from session_store import resolve_instance_id
+    tok_dir = ROOT / "runtime" / "session_cache" / resolve_instance_id()
     if override:
         p = Path(override)
         if not p.is_absolute():

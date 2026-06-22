@@ -51,14 +51,14 @@ pub fn welcome(lang: Lang) -> String {
         "👋 *UPI QR Bot*\n\n\
          Gửi cho bot 1 trong 2:\n\
          • File `session.json` lấy từ https://chatgpt.com/api/auth/session\n\
-         • Hoặc 1 tài khoản dạng `email|password|2fa_secret`\n\n\
-         Bạn chạy được tối đa *2 tiến trình* cùng lúc. Mỗi tiến trình hiển thị ở 1 tin riêng kèm nút Dừng.\n\n\
+         • Hoặc tài khoản dạng `email|password|2fa_secret` (gửi nhiều dòng = nhiều tiến trình)\n\n\
+         Bạn chạy được tối đa *10 tiến trình* cùng lúc. Mỗi tiến trình hiển thị ở 1 tin riêng kèm nút Dừng.\n\n\
          Chọn thao tác:",
         "👋 *UPI QR Bot*\n\n\
          Send the bot one of:\n\
          • A `session.json` file from https://chatgpt.com/api/auth/session\n\
-         • Or one account as `email|password|2fa_secret`\n\n\
-         You can run up to *2 processes* at once. Each process shows in its own message with a Stop button.\n\n\
+         • Or accounts as `email|password|2fa_secret` (multiple lines = multiple processes)\n\n\
+         You can run up to *10 processes* at once. Each process shows in its own message with a Stop button.\n\n\
          Pick an action:",
     )
 }
@@ -82,6 +82,42 @@ pub fn btn_stop_this(lang: Lang) -> String {
 }
 pub fn btn_language(lang: Lang) -> String {
     pick(lang, "🌐 Ngôn ngữ", "🌐 Language")
+}
+pub fn btn_board_refresh(lang: Lang) -> String {
+    pick(lang, "🔄 Làm mới", "🔄 Refresh")
+}
+pub fn btn_board_stop(lang: Lang, email: &str) -> String {
+    pick(lang, &format!("🛑 {}", email), &format!("🛑 {}", email))
+}
+
+// ─── Board ────────────────────────────────────────────────────────────
+
+/// Header bảng tiến trình. `scope_all` = admin xem toàn hệ thống; false = user
+/// chỉ xem tiến trình của chính mình.
+pub fn board_header(lang: Lang, running: usize, queued: usize, scope_all: bool, clock: &str) -> String {
+    let scope_vi = if scope_all { "toàn hệ thống" } else { "của bạn" };
+    let scope_en = if scope_all { "system-wide" } else { "yours" };
+    pick(
+        lang,
+        &format!("📊 Tiến trình {} — ▶️ {} chạy · ⏳ {} chờ · 🕒 {}", scope_vi, running, queued, clock),
+        &format!("📊 Processes ({}) — ▶️ {} run · ⏳ {} queue · 🕒 {}", scope_en, running, queued, clock),
+    )
+}
+
+pub fn board_empty(lang: Lang, scope_all: bool) -> String {
+    if scope_all {
+        pick(lang, "\n\nKhông có tiến trình nào đang chạy.", "\n\nNo processes running.")
+    } else {
+        pick(lang, "\n\nBạn chưa có tiến trình nào.", "\n\nYou have no processes running.")
+    }
+}
+
+pub fn board_stopped_toast(lang: Lang, ok: bool) -> String {
+    if ok {
+        pick(lang, "🛑 Đã dừng tiến trình.", "🛑 Process stopped.")
+    } else {
+        pick(lang, "ℹ️ Tiến trình đã kết thúc / không thuộc về bạn.", "ℹ️ Process already finished / not yours.")
+    }
 }
 
 // ─── Settings menu ────────────────────────────────────────────────────
@@ -114,15 +150,58 @@ pub fn invalid_combo(lang: Lang) -> String {
     )
 }
 
-pub fn need_input(lang: Lang) -> String {
-    pick(
+/// Header khi nhận batch nhiều dòng combo. `accepted` = số job sẽ tạo,
+/// `invalid` = dòng sai bị bỏ, `dropped` = dòng vượt cap/user bị bỏ.
+pub fn combo_batch_received(lang: Lang, accepted: usize, invalid: usize, dropped: usize) -> String {
+    let mut vi = format!("📥 Nhận {} tài khoản — tạo tiến trình cho từng cái...", accepted);
+    let mut en = format!("📥 Received {} accounts — creating a process for each...", accepted);
+    if invalid > 0 {
+        vi.push_str(&format!("\n⚠️ Bỏ {} dòng sai định dạng.", invalid));
+        en.push_str(&format!("\n⚠️ Skipped {} invalid line(s).", invalid));
+    }
+    if dropped > 0 {
+        vi.push_str(&format!("\n⚠️ Vượt giới hạn {} tiến trình/lần — bỏ {} dòng dư.", accepted, dropped));
+        en.push_str(&format!("\n⚠️ Over the {} processes/batch limit — dropped {} extra line(s).", accepted, dropped));
+    }
+    pick(lang, &vi, &en)
+}
+
+pub fn need_input(lang: Lang) -> String {    pick(
         lang,
         "📄 Gửi file `session.json` hoặc dán combo `email|password|2fa`.",
         "📄 Send a `session.json` file or paste combo `email|password|2fa`.",
     )
 }
 
+pub fn session_no_email(lang: Lang) -> String {
+    pick(
+        lang,
+        "❌ Session thiếu email. File `session.json` phải có `user.email` hợp lệ \
+         (đây là định danh tài khoản). Lấy lại session từ \
+         https://chatgpt.com/api/auth/session rồi gửi lại.",
+        "❌ Session has no email. The `session.json` must contain a valid \
+         `user.email` (account identifier). Re-fetch from \
+         https://chatgpt.com/api/auth/session and resend.",
+    )
+}
+
 // ─── Admission ────────────────────────────────────────────────────────
+
+pub fn duplicate_account(lang: Lang, email: &str) -> String {
+    pick(
+        lang,
+        &format!(
+            "⚠️ Tài khoản {} đang chạy/trong hàng chờ rồi. Đợi tiến trình hiện tại \
+             xong (hoặc /stop) trước khi gửi lại tài khoản này.",
+            email
+        ),
+        &format!(
+            "⚠️ Account {} is already running/queued. Wait for the current process \
+             to finish (or /stop) before resubmitting this account.",
+            email
+        ),
+    )
+}
 
 pub fn max_concurrent(lang: Lang, max: u32) -> String {
     pick(
