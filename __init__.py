@@ -10,6 +10,8 @@ Flow:
 import sys
 from pathlib import Path
 
+__version__ = "3.2.0"
+
 _PACKAGE_DIR = Path(__file__).resolve().parent
 if str(_PACKAGE_DIR) not in sys.path:
     sys.path.insert(0, str(_PACKAGE_DIR))
@@ -17,4 +19,4 @@ if str(_PACKAGE_DIR) not in sys.path:
 from models import SignupRequest, SignupResult, BrowserHandoff
 from signup import run_signup
 
-__all__ = ["SignupRequest", "SignupResult", "BrowserHandoff", "run_signup"]
+__all__ = ["__version__", "SignupRequest", "SignupResult", "BrowserHandoff", "run_signup"]
