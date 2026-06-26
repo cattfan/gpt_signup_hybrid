@@ -2,6 +2,45 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), [SemVer](https://semver.org/).
 
+## [3.5.0] — 2026-06-27
+
+### Added — Hybrid registration pipeline + Camoufox relay (Phase 10-11)
+
+#### OpenAI sentinel sidecar + K2/K2c integration (Phase 10)
+- `sentinel_sidecar.py` — QuickJS K2/K2c executor chạy trong Camoufox process cô lập.
+- `sentinel_browser.py` — bridge layer `page.evaluate` → sidecar RPC.
+- `openai_sentinel_in_page.js` — K2/K2c wire format + proof validation logic.
+- `SIDECAR_SHARED_PROXY` env — share một Camoufox instance per proxy key để giảm RAM khi chạy concurrent signup.
+- `_submit_otp` refactor: human-like typing + `expect_response` wrapper, trả về `(continue_url, source)` distinguishing UI vs API submission paths.
+- HAR-aligned OTP form (per-char typing + Enter key) khớp với record tay.
+
+#### Hybrid registration mode + Camoufox relay (Phase 11)
+- Mode `hybrid` (alongside `pure_request` + `browser`): Camoufox (Firefox-shaped) làm ChatGPT auth relay, reproduce field bằng pure Python.
+- `CamoufoxTokenGenerator` — JS harness chạy sentinel SDK trong real browser để mint sentinel token (`t`) + session-observer token (`so`).
+- Browser pool factory cho concurrent Camoufox instance với connection reuse.
+- OTP acquisition loop tích hợp mail provider adapter (iCloud, Gmail, custom API).
+- Sentinel TTL tracking, thread-affinity check, quickwin performance validator.
+- CLI flag `--reg-mode hybrid` + cấu hình locale/platform/proxy cho Camoufox relay.
+- Web UI và API routes hỗ trợ chọn `reg_mode` (`browser` | `pure_request` | `hybrid`).
+- Bump default concurrency 1 → 3 (3 signup song song trên 1 Camoufox process).
+
+### Schema
+- Không thay đổi schema (vẫn v12 từ 3.2.0).
+
+### Test
+- 30+ test/check_*.py mới phủ Phase 10-11:
+  - `check_hybrid_*.py` (perf, sentinel TTL, so observer, thread affinity, opt quickwins).
+  - `check_k2_*.py` (leak defenses, K2 results, sidecar pure-HTTP).
+  - `check_sentinel_token_source.py` — trace nguồn sinh token.
+  - `check_sidecar_proxy_decouple.py` — proxy sharing isolation.
+  - `check_har_signup_deep.py`, `check_otp_continue_url.py`, `check_password_create_timing.py` — HAR alignment.
+  - `smoke_hybrid_*.py` — asyncio safety, MFA inline, OTP loop, full reg flow.
+
+### Operational notes
+- Hybrid mode khuyến nghị cho production: tận dụng Camoufox anti-detect + tốc độ HTTP layer.
+- Sentinel sidecar share Camoufox per proxy giảm RAM ~60% khi run >5 concurrent.
+- CAPTCHA/Turnstile vẫn cần proxy residential India (datacenter ban dù code perfect).
+
 ## [3.2.0] — 2026-06-25
 
 ### Added — REG anti-ban master suite (Phase 1-9)

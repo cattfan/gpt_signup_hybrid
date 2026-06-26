@@ -444,7 +444,7 @@ def record_cmd(
 @app.command("version", hidden=True)
 def _version_cmd() -> None:
     """Print package version (hidden helper)."""
-    typer.echo("gpt_signup_hybrid 3.2.0")
+    typer.echo("gpt_signup_hybrid 3.5.0")
 
 
 @app.command("web")

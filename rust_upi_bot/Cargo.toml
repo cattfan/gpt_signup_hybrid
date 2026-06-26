@@ -1,6 +1,6 @@
 [package]
 name = "upi-qr-bot"
-version = "3.2.0"
+version = "3.5.0"
 edition = "2021"
 description = "UPI QR runner Telegram bot — Rust port of web/upi_runner.py for OpenWrt aarch64 routers"
 

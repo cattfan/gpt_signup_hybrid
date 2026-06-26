@@ -10,7 +10,7 @@ Flow:
 import sys
 from pathlib import Path
 
-__version__ = "3.2.0"
+__version__ = "3.5.0"
 
 _PACKAGE_DIR = Path(__file__).resolve().parent
 if str(_PACKAGE_DIR) not in sys.path:
