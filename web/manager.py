@@ -371,7 +371,7 @@ class Job:
     id: str
     email: str
     combo: str  # raw combo line
-    mail_mode: str = "outlook"
+    mail_mode: str = "icloud_v3"
     reg_mode: str = "browser"  # "browser" | "pure_request" | "hybrid"
     status: JobStatus = "queued"
     log_lines: list[str] = field(default_factory=list)
@@ -916,7 +916,7 @@ class JobManager:
         self._last_start_ts = 0.0
         self._stagger_gen += 1
 
-    def add_jobs(self, combos: list[str], *, default_password: str | None = None, mail_mode: str = "outlook", worker_config: dict[str, str] | None = None, reg_mode: str = "browser") -> list[Job]:
+    def add_jobs(self, combos: list[str], *, default_password: str | None = None, mail_mode: str = "icloud_v3", worker_config: dict[str, str] | None = None, reg_mode: str = "browser") -> list[Job]:
         """Thêm jobs từ list combo/email strings. Skip đã có trong list (dedup theo email)."""
         spec = get_spec(mail_mode)  # KeyError nếu mode lạ — server chặn trước
         existing_emails = {j.email.lower() for j in self.jobs.values() if j.status != "cancelled"}

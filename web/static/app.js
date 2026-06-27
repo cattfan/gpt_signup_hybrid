@@ -137,7 +137,7 @@
     debug: false,
     useProxy: true,
     mailModes: [],            // [{id, label, input_placeholder, input_help, config_schema}]
-    currentMailMode: 'outlook',
+    currentMailMode: 'icloud_v3',
   };
 
   // ── DOM refs ──────────────────────────────────────────────────────
@@ -185,6 +185,10 @@
     verify: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2 4 5v6c0 5 3.4 7.7 8 9 4.6-1.3 8-4 8-9V5l-8-3Z"/><polyline points="9 12 11 14 15 10"/></svg>',
   });
   const mailModeUiCopy = Object.freeze({
+    icloud_v3: {
+      input_help: 'One iCloud v3 entry per line: email|api_url (Worker v2 readmail URL).',
+      input_placeholder: 'petunia-boar-3d+hblx3n@icloud.com|https://icloud-cf-mail-v2.n5pskgzs9g.workers.dev/readmail/<token>/data',
+    },
     outlook: {
       input_help: 'One Outlook combo per line.',
       input_placeholder: 'email|password|refresh_token|client_id',
@@ -1101,7 +1105,7 @@
     // Restore from Settings store (DB-backed)
     const saved = Settings.get('mail_mode.current');
     const validIds = state.mailModes.map(m => m.id);
-    const initial = (saved && validIds.includes(saved)) ? saved : 'outlook';
+    const initial = (saved && validIds.includes(saved)) ? saved : 'icloud_v3';
     applyMailMode(initial);
     // Listen change
     dom.mailModeSelect.addEventListener('change', () => {

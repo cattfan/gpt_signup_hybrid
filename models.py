@@ -65,14 +65,18 @@ class SignupRequest(BaseModel):
     )
 
     # Polling OTP — chọn 1 trong các provider:
-    #   - Worker logs API (icloud-cf-mail style) — default cho mail @icloud.com qua relay.
+    #   - iCloud v3 (icloud-cf-mail-v2 Worker, URL gắn cứng per-mailbox) — DEFAULT.
+    #   - Worker logs API (icloud-cf-mail v1 style) — fallback cho mailbox cũ.
     #   - Outlook combo (Microsoft Graph) — cho mail @hotmail.com / @outlook.com.
     #   - Gmail Advanced (checkgmail.live API) — cho mail @gmail.com mua qua dịch vụ.
     #   - China iCloud (icloudapi.xyz) — viewer URL riêng cho mỗi alias HME.
     mail_provider: str = Field(
-        default="worker",
-        description="Provider: 'worker', 'outlook', 'dongvanfb', 'gmail_advanced', hoặc 'china_icloud'.",
-        pattern="^(worker|outlook|dongvanfb|gmail_advanced|china_icloud)$",
+        default="icloud_v3",
+        description=(
+            "Provider: 'icloud_v3' (default), 'worker', 'outlook', 'dongvanfb', "
+            "'gmail_advanced', hoặc 'china_icloud'."
+        ),
+        pattern="^(icloud_v3|worker|outlook|dongvanfb|gmail_advanced|china_icloud)$",
     )
     # Gmail Advanced config
     gmail_api_url: str | None = Field(
@@ -85,6 +89,14 @@ class SignupRequest(BaseModel):
         description=(
             "Viewer URL mailbox icloudapi.xyz "
             "(dùng khi mail_provider='china_icloud'). Format: http(s)://.../show/<token>/<email>."
+        ),
+    )
+    # iCloud v3 config (icloud-cf-mail-v2 Worker)
+    icloud_v3_url: str | None = Field(
+        default=None,
+        description=(
+            "Worker v2 mailbox URL (dùng khi mail_provider='icloud_v3'). "
+            "Format: http(s)://.../readmail/<token>/data."
         ),
     )
     # Worker config

@@ -1506,3 +1506,264 @@ def build_provider_china_icloud(
     *, email: str, api_url: str, proxy: str | None = None,
 ) -> ChinaICloudProvider:
     return ChinaICloudProvider(email=email, api_url=api_url, proxy=proxy)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# iCloud v3 provider (icloud-cf-mail-v2 Worker — URL gắn cứng mailbox)
+# ─────────────────────────────────────────────────────────────────────
+#
+# Khác WorkerMailProvider (v1) chỗ:
+#   - v1: 1 URL chung `/logs?mail=<email>` + Bearer token.
+#   - v3: mỗi mailbox có URL riêng `/readmail/<token>/data`, không cần auth.
+# Response JSON giống v1 (cùng key `messages`/`logs`), schema field giống:
+#     {
+#       "email": "...",
+#       "messages": [{"id","subject","date","htmlBody","receivedAt"}, ...],
+#       "logs": [...],
+#       "pagination": {...}
+#     }
+# Mỗi URL gắn cứng vào 1 alias HME → KHÔNG cần lọc theo `to` / `started_at`
+# (alias chỉ chứa mail của phiên hiện tại; caller dedup qua tried_codes).
+
+# Số mã OTP tối đa lấy về trong 1 lần `poll_all_codes`. Đồng nhất với Worker v1.
+_ICLOUD_V3_MAX_CODES = 5
+
+# Endpoint dấu hiệu hợp lệ — URL phải có pattern `/readmail/<token>/data` để
+# tránh user paste nhầm URL của provider khác. Check lỏng (substring) chấp
+# nhận cả http/https + bất kỳ host (proxy mirror, dev tunnel).
+_ICLOUD_V3_URL_MARKER = "/readmail/"
+
+
+class IcloudV3ParseError(Exception):
+    """Parse line fail cho iCloud v3 mode."""
+
+
+class IcloudV3Provider:
+    """Poll OTP qua Worker v2 (icloud-cf-mail-v2) mailbox API.
+
+    Format input mỗi dòng: ``email|api_url`` (separator ``|`` — 1 ký tự,
+    giống Gmail Advanced).
+
+    Provider GET ``api_url`` → JSON ``messages`` → extract OTP 6 số từ
+    ``subject`` + ``htmlBody``. URL gắn cứng vào mailbox riêng nên KHÔNG
+    cần lọc theo recipient/sender; caller dedup qua tried_codes.
+    """
+
+    SEPARATOR = "|"
+
+    def __init__(self, *, email: str, api_url: str, proxy: str | None = None):
+        if not email or "@" not in email:
+            raise ValueError(f"icloud_v3: invalid email {email!r}")
+        if not api_url or not api_url.startswith(("http://", "https://")):
+            raise ValueError(
+                f"icloud_v3: api_url phải http(s)://, nhận {api_url[:80]!r}"
+            )
+        if _ICLOUD_V3_URL_MARKER not in api_url:
+            raise ValueError(
+                f"icloud_v3: api_url thiếu marker {_ICLOUD_V3_URL_MARKER!r} "
+                f"— nhận {api_url[:120]!r}"
+            )
+        self.email = email.strip().lower()
+        self.api_url = api_url.strip()
+        self.proxy = proxy.strip() if isinstance(proxy, str) and proxy.strip() else None
+
+    @classmethod
+    def parse_line(cls, line: str) -> tuple[str, str]:
+        """Parse ``email|url`` → (email, api_url). Raise IcloudV3ParseError nếu sai."""
+        stripped = (line or "").strip()
+        if not stripped:
+            raise IcloudV3ParseError("dòng trống")
+        if cls.SEPARATOR not in stripped:
+            raise IcloudV3ParseError(
+                f"format phải là email{cls.SEPARATOR}url, nhận: {line[:80]}"
+            )
+        # Chỉ split 1 lần để tránh URL chứa ký tự `|` (an toàn theo RFC URL
+        # vì `|` là reserved character, nhưng vẫn để chắc).
+        email_part, _, url_part = stripped.partition(cls.SEPARATOR)
+        email_part = email_part.strip()
+        url_part = url_part.strip()
+        if "@" not in email_part or " " in email_part:
+            raise IcloudV3ParseError(f"email không hợp lệ: {email_part!r}")
+        if not url_part.startswith(("http://", "https://")):
+            raise IcloudV3ParseError(
+                f"url phải bắt đầu http(s)://: {url_part[:60]}"
+            )
+        if _ICLOUD_V3_URL_MARKER not in url_part:
+            raise IcloudV3ParseError(
+                f"url thiếu marker {_ICLOUD_V3_URL_MARKER!r}, nhận: {url_part[:120]}"
+            )
+        return email_part, url_part
+
+    @staticmethod
+    def _normalize(payload: Any) -> list[dict[str, Any]]:
+        """Lấy list `messages` từ response. Tái dụng key list của Worker v1."""
+        if isinstance(payload, list):
+            return payload
+        if isinstance(payload, dict):
+            for key in ("messages", "items", "logs", "emails", "data"):
+                value = payload.get(key)
+                if isinstance(value, list):
+                    return value
+        return []
+
+    def _build_client(self) -> httpx.AsyncClient:
+        kwargs: dict[str, Any] = {
+            "timeout": 20.0,
+            "follow_redirects": True,
+            "headers": {
+                "Accept": "application/json,*/*",
+                "User-Agent": _BROWSER_UA,
+            },
+        }
+        if self.proxy:
+            kwargs["proxy"] = self.proxy
+        return httpx.AsyncClient(**kwargs)
+
+    async def poll_otp(
+        self,
+        *,
+        recipient: str,
+        started_at: datetime,
+        timeout_seconds: float,
+        poll_interval_seconds: float,
+        log,
+    ) -> str:
+        deadline = time.monotonic() + max(timeout_seconds, 1.0)
+        log(
+            f"[otp:icloud_v3] polling {self.email} "
+            f"(timeout {timeout_seconds:.0f}s)"
+        )
+        log(f"[otp:icloud_v3] api: {self.api_url}")
+
+        # Adaptive backoff giống Worker v1: 1s → 2s → 3s → poll_interval.
+        _initial_backoff = (1.0, 2.0, 3.0)
+
+        attempt = 0
+        consecutive_errors = 0
+        max_consecutive = 3
+
+        async with self._build_client() as client:
+            while True:
+                attempt += 1
+                try:
+                    response = await client.get(self.api_url)
+                    if response.status_code != 200:
+                        consecutive_errors += 1
+                        log(
+                            f"[otp:icloud_v3] HTTP {response.status_code} "
+                            f"attempt {attempt}"
+                        )
+                        if consecutive_errors >= max_consecutive:
+                            raise TimeoutError(
+                                f"iCloud v3 HTTP error {consecutive_errors} lần liên tiếp "
+                                f"(last status={response.status_code})"
+                            )
+                    else:
+                        consecutive_errors = 0
+                        messages = self._normalize(response.json())
+                        # Sort mới→cũ. Mail v3 luôn có `date`/`receivedAt`,
+                        # helper sẽ chọn key có sẵn.
+                        _sort_messages_newest_first(messages)
+                        if not messages:
+                            if attempt <= 3 or attempt % 5 == 0:
+                                log(
+                                    f"[otp:icloud_v3] mailbox trống attempt {attempt}"
+                                )
+                        else:
+                            for msg in messages:
+                                # KHÔNG lọc theo `to` (URL đã gắn cứng mailbox)
+                                # và KHÔNG lọc theo thời gian (alias dùng 1 phiên).
+                                subject = str(msg.get("subject") or "")
+                                body = (
+                                    msg.get("htmlBody")
+                                    or msg.get("bodyText")
+                                    or msg.get("text")
+                                    or msg.get("body")
+                                    or msg.get("content")
+                                    or msg.get("html")
+                                    or ""
+                                )
+                                code = _extract_otp(subject, str(body))
+                                if code:
+                                    log(
+                                        f"[otp:icloud_v3] found {code} "
+                                        f"(attempt {attempt})"
+                                    )
+                                    return code
+                            if attempt <= 3 or attempt % 5 == 0:
+                                log(
+                                    f"[otp:icloud_v3] có {len(messages)} mail nhưng "
+                                    f"chưa thấy code 6 số (attempt {attempt})"
+                                )
+                except (httpx.HTTPError, ValueError) as exc:
+                    consecutive_errors += 1
+                    log(
+                        f"[otp:icloud_v3] error attempt {attempt} "
+                        f"({consecutive_errors}/{max_consecutive}): "
+                        f"{type(exc).__name__}: {exc!r}"
+                    )
+                    if consecutive_errors >= max_consecutive:
+                        raise TimeoutError(
+                            f"iCloud v3 network error {consecutive_errors} lần liên tiếp: "
+                            f"{type(exc).__name__}: {exc}"
+                        ) from exc
+
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError(
+                        f"OTP timeout after {timeout_seconds}s for {self.email} (icloud_v3)"
+                    )
+                sleep_s = (
+                    _initial_backoff[attempt - 1]
+                    if attempt <= len(_initial_backoff)
+                    else poll_interval_seconds
+                )
+                await asyncio.sleep(min(sleep_s, remaining))
+
+    async def poll_all_codes(
+        self,
+        *,
+        recipient: str,
+        started_at: datetime,
+        log,
+    ) -> list[str]:
+        """Fetch 1 lần, lấy tất cả OTP codes (mới→cũ). Không block.
+
+        Caller dùng để fallback thử mã khác khi mã hiện tại bị reject (mail
+        delay, multiple OTP requests). Mirror ``WorkerMailProvider.poll_all_codes``.
+        """
+        try:
+            async with self._build_client() as client:
+                response = await client.get(self.api_url)
+                if response.status_code != 200:
+                    return []
+                messages = self._normalize(response.json())
+                _sort_messages_newest_first(messages)
+                codes: list[str] = []
+                seen: set[str] = set()
+                for msg in messages:
+                    subject = str(msg.get("subject") or "")
+                    body = (
+                        msg.get("htmlBody")
+                        or msg.get("bodyText")
+                        or msg.get("text")
+                        or msg.get("body")
+                        or msg.get("content")
+                        or msg.get("html")
+                        or ""
+                    )
+                    code = _extract_otp(subject, str(body))
+                    if code and code not in seen:
+                        seen.add(code)
+                        codes.append(code)
+                        if len(codes) >= _ICLOUD_V3_MAX_CODES:
+                            break
+                return codes
+        except Exception:  # noqa: BLE001
+            return []
+
+
+def build_provider_icloud_v3(
+    *, email: str, api_url: str, proxy: str | None = None,
+) -> IcloudV3Provider:
+    return IcloudV3Provider(email=email, api_url=api_url, proxy=proxy)

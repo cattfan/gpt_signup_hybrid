@@ -22,6 +22,7 @@ from mail_providers import (
     build_provider_china_icloud,
     build_provider_dongvanfb,
     build_provider_gmail_advanced,
+    build_provider_icloud_v3,
     build_provider_outlook,
     build_provider_worker,
 )
@@ -187,6 +188,14 @@ def _build_mail_provider(
         return build_provider_china_icloud(
             email=request.email,
             api_url=request.china_icloud_url,
+            proxy=None,
+        )
+    if request.mail_provider == "icloud_v3":
+        if not request.icloud_v3_url:
+            raise ValueError("mail_provider='icloud_v3' yêu cầu icloud_v3_url")
+        return build_provider_icloud_v3(
+            email=request.email,
+            api_url=request.icloud_v3_url,
             proxy=None,
         )
     if request.mail_provider == "worker":

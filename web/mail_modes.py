@@ -16,6 +16,8 @@ from mail_providers import (
     ChinaICloudProvider,
     GmailAdvancedParseError,
     GmailAdvancedProvider,
+    IcloudV3ParseError,
+    IcloudV3Provider,
     OutlookCombo,
     OutlookComboError,
 )
@@ -297,6 +299,66 @@ CHINA_ICLOUD_MODE = MailModeSpec(
 )
 
 
+# ─── iCloud v3 mode (icloud-cf-mail-v2 Worker, URL per-mailbox) ───────
+
+
+def _parse_icloud_v3_line(line: str) -> ParsedLine:
+    """Parse `email|api_url` cho iCloud v3."""
+    try:
+        email, _api_url = IcloudV3Provider.parse_line(line)
+    except IcloudV3ParseError as exc:
+        raise MailModeParseError(str(exc)) from exc
+    return ParsedLine(email=email, raw=line)
+
+
+def _build_icloud_v3_request(
+    parsed: ParsedLine,
+    *,
+    worker_config: dict[str, str] | None = None,
+    password: str | None = None,
+    headless: bool = True,
+    keep_browser_open: bool = False,
+    proxy: str | None = None,
+    reg_mode: str = "browser",
+) -> SignupRequest:
+    email, api_url = IcloudV3Provider.parse_line(parsed.raw)
+    from config import env_insecure_tls
+    return SignupRequest(
+        email=email,
+        mail_provider="icloud_v3",
+        icloud_v3_url=api_url,
+        # HME relay (Apple forward → Worker v2) có thể trễ vài phút. Giữ cùng
+        # budget với Worker v1 / China iCloud để tránh timeout sớm.
+        otp_timeout_seconds=300.0,
+        otp_poll_interval_seconds=5.0,
+        # Resend sớm chỉ vô hiệu mã đang bay rồi phải chờ mail mới → đuổi vô tận.
+        otp_resend_after_seconds=120.0,
+        headless=headless,
+        keep_browser_open=keep_browser_open,
+        password=password,
+        proxy=proxy,
+        tls_insecure=env_insecure_tls(),
+        reg_mode=reg_mode,
+    )
+
+
+ICLOUD_V3_MODE = MailModeSpec(
+    id="icloud_v3",
+    label="iCloud v3 (Worker v2, URL per-mailbox)",
+    input_placeholder=(
+        "petunia-boar-3d+hblx3n@icloud.com|"
+        "https://icloud-cf-mail-v2.n5pskgzs9g.workers.dev/readmail/<token>/data"
+    ),
+    input_help=(
+        "Mỗi dòng 1 cặp `email|url` (separator `|`). "
+        "URL là endpoint mailbox riêng do Worker v2 cấp."
+    ),
+    config_schema=[],
+    parse_line=_parse_icloud_v3_line,
+    build_request=_build_icloud_v3_request,
+)
+
+
 # ─── DongVanFB Outlook mode (legacy, ẨN khỏi UI) ──────────────────────
 #
 # Trước đây DongVanFB là 1 mode riêng trên UI. Đã gộp vào "outlook" mode (cascade
@@ -351,8 +413,10 @@ DONGVANFB_MODE = MailModeSpec(
 # ─── Registry ─────────────────────────────────────────────────────────
 
 # Public registry — show trên UI qua endpoint /api/mail-modes.
+# Thứ tự dict = thứ tự render trên UI dropdown. icloud_v3 đặt đầu vì là default.
 # DongVanFB không xuất hiện ở đây vì đã gộp vào 'outlook' (cascade).
 _REGISTRY: dict[str, MailModeSpec] = {
+    ICLOUD_V3_MODE.id: ICLOUD_V3_MODE,
     OUTLOOK_MODE.id: OUTLOOK_MODE,
     WORKER_MODE.id: WORKER_MODE,
     GMAIL_ADVANCED_MODE.id: GMAIL_ADVANCED_MODE,

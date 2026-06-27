@@ -249,8 +249,11 @@ class AddJobsRequest(BaseModel):
         description="Password mặc định cho tất cả job. Nếu null → random.",
     )
     mail_mode: str = Field(
-        default="outlook",
-        description="Mail mode: 'outlook', 'worker', 'gmail_advanced', hoặc 'china_icloud'.",
+        default="icloud_v3",
+        description=(
+            "Mail mode: 'icloud_v3' (default), 'outlook', 'worker', "
+            "'gmail_advanced', hoặc 'china_icloud'."
+        ),
     )
     reg_mode: str = Field(
         default="pure_request",

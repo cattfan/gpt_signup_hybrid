@@ -557,7 +557,19 @@ def signup_cmd(
     # Provider selection
     mail_provider: str | None = typer.Option(
         None, "--mail-provider",
-        help="'worker' hoặc 'outlook'. Auto-detect: outlook nếu có --outlook-combo, ngược lại worker.",
+        help=(
+            "'worker' | 'outlook' | 'icloud_v3'. Auto-detect: "
+            "icloud_v3 nếu có --icloud-v3, "
+            "outlook nếu có --outlook-combo, ngược lại worker."
+        ),
+    ),
+    # iCloud v3 provider opts (Worker v2, URL gắn cứng per-mailbox)
+    icloud_v3: str | None = typer.Option(
+        None, "--icloud-v3",
+        help=(
+            "[icloud_v3] Cặp `email|api_url` (Worker v2 readmail URL). "
+            "Auto-derive --email từ phần trước dấu `|`."
+        ),
     ),
     # Worker provider opts
     logs_url: str = typer.Option(
@@ -729,17 +741,54 @@ def signup_cmd(
             picked.email, picked.password, picked.refresh_token, picked.client_id,
         ))
 
-    # Auto-detect provider
+    # Parse --icloud-v3 (email|url) trước khi auto-detect provider
+    icloud_v3_email: str | None = None
+    icloud_v3_url: str | None = None
+    if icloud_v3:
+        from mail_providers import IcloudV3ParseError, IcloudV3Provider
+        try:
+            icloud_v3_email, icloud_v3_url = IcloudV3Provider.parse_line(icloud_v3)
+        except IcloudV3ParseError as exc:
+            typer.echo(f"Error: --icloud-v3 invalid: {exc}", err=True)
+            raise typer.Exit(2)
+
+    # Auto-detect provider — order khớp với help text
     resolved_provider = mail_provider
     if resolved_provider is None:
-        resolved_provider = "outlook" if outlook_combo else "worker"
+        if icloud_v3_url:
+            resolved_provider = "icloud_v3"
+        elif outlook_combo:
+            resolved_provider = "outlook"
+        else:
+            resolved_provider = "worker"
 
-    # Auto-derive email từ outlook combo nếu không truyền --email
+    # Validate provider known (regex pattern enforces this at SignupRequest level
+    # but giúp CLI fail-fast với message dễ hiểu hơn ValidationError).
+    if resolved_provider not in ("icloud_v3", "worker", "outlook", "dongvanfb", "gmail_advanced", "china_icloud"):
+        typer.echo(
+            f"Error: --mail-provider {resolved_provider!r} không hỗ trợ. "
+            f"Chọn: icloud_v3 | worker | outlook | dongvanfb | gmail_advanced | china_icloud.",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    # Auto-derive email từ provider input nếu không truyền --email
     if resolved_provider == "outlook" and outlook_combo and not email:
         first_part = outlook_combo.split("|", 1)[0].strip()
         if "@" in first_part:
             email = first_part
             typer.echo(f"[cli] auto email={email} (từ outlook combo)")
+    if resolved_provider == "icloud_v3" and icloud_v3_email and not email:
+        email = icloud_v3_email
+        typer.echo(f"[cli] auto email={email} (từ --icloud-v3)")
+
+    # Validate provider yêu cầu input bắt buộc
+    if resolved_provider == "icloud_v3" and not icloud_v3_url:
+        typer.echo(
+            "Error: --mail-provider=icloud_v3 yêu cầu --icloud-v3 'email|api_url'.",
+            err=True,
+        )
+        raise typer.Exit(2)
 
     if not email:
         typer.echo(
@@ -759,6 +808,7 @@ def signup_cmd(
         email_api_key=api_key,
         email_insecure_tls=insecure_tls,
         outlook_combo=outlook_combo,
+        icloud_v3_url=icloud_v3_url,
         headless=headless,
         off_font=off_font,
         profile_template=profile_template,
