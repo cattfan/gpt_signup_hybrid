@@ -615,7 +615,6 @@
             if (j && j.has_qr) {
               // Delay nhẹ để DOM ổn định sau renderJobs innerHTML replace
               setTimeout(() => {
-                openQrModal(jobId);
                 copyQrToClipboard(jobId);
                 triggerPlanCheck(jobId, { force: true });
               }, 300);
@@ -1224,6 +1223,11 @@
 
     if (j.status === 'error' && (!prev || prev.status !== 'error') && window.GptUi?.playErrorAlert) {
       window.GptUi.playErrorAlert();
+    }
+
+    // Job vừa approved (success) → nổ fanfare to
+    if (j.status === 'success' && (!prev || prev.status !== 'success') && window.GptUi?.playSuccessAlert) {
+      window.GptUi.playSuccessAlert();
     }
 
     // Job mới hoặc plan_check thay đổi (đặc biệt is_plus đổi true) → cần

@@ -309,24 +309,18 @@ class HybridChatGPTRelay(ChatGPTRelay):
             return (False, 0, str(exc))
 
     def _resend_otp(self) -> None:
-        """POST /email-otp/resend → fallback ``otp_send()`` nếu fail."""
-        url = "https://auth.openai.com/api/accounts/email-otp/resend"
-        try:
-            r = self._post(url, headers=_ccx_headers.otp_send(self.profile))
-            if 200 <= r.status_code < 300:
-                self._hybrid_log(f"[hybrid-relay] OTP resent (HTTP {r.status_code})")
-                return
-            self._hybrid_log(
-                f"[hybrid-relay] /resend HTTP {r.status_code} — fallback /send"
-            )
-        except Exception as exc:  # noqa: BLE001
-            self._hybrid_log(f"[hybrid-relay] /resend error: {exc} — fallback /send")
-        # Fallback: gọi otp_send() (POST /email-otp/send) — luôn được upstream
-        # support, không depend /resend endpoint.
+        """Resend OTP: GET /email-otp/send (giống golden otp_send).
+
+        Golden flow (HAR capture): browser navigate GET /email-otp/send với
+        navigation headers. ``/resend`` endpoint không tồn tại trong capture —
+        chỉ ``/send`` lặp lại. Dùng đúng method + headers golden để server
+        không flag bất thường.
+        """
         try:
             self.otp_send()
+            self._hybrid_log("[hybrid-relay] OTP resent via /send (golden path)")
         except Exception as exc:  # noqa: BLE001
-            self._hybrid_log(f"[hybrid-relay] fallback /send error: {exc}")
+            self._hybrid_log(f"[hybrid-relay] /send resend error: {exc}")
 
 
 class _NullOTPReader:

@@ -123,8 +123,48 @@
   document.addEventListener('click', _unlockAudio);
   document.addEventListener('keydown', _unlockAudio);
 
-  // Expose for session.js and link.js
-  window.GptUi = Object.assign(window.GptUi || {}, { playErrorAlert });
+  // Success alert sound — ascending fanfare, loud & celebratory
+  function playSuccessAlert() {
+    try {
+      const ctx = _getAudioCtx();
+      const now = ctx.currentTime;
+      // 5-note ascending fanfare: C5 → E5 → G5 → C6 → E6, loud
+      const notes = [523, 659, 784, 1047, 1319];
+      for (let i = 0; i < notes.length; i++) {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.type = 'square';
+        osc.frequency.value = notes[i];
+        gain.gain.value = 0.6;
+        const t = now + i * 0.15;
+        osc.start(t);
+        gain.gain.setValueAtTime(0.6, t);
+        gain.gain.linearRampToValueAtTime(0, t + 0.2);
+        osc.stop(t + 0.2);
+      }
+      // Final sustained chord (C5+E5+G5) — big finish
+      const chord = [523, 659, 784];
+      for (const freq of chord) {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.type = 'sine';
+        osc.frequency.value = freq;
+        gain.gain.value = 0.4;
+        const t = now + notes.length * 0.15;
+        osc.start(t);
+        gain.gain.setValueAtTime(0.4, t);
+        gain.gain.linearRampToValueAtTime(0, t + 0.6);
+        osc.stop(t + 0.6);
+      }
+    } catch (e) { /* AudioContext not available */ }
+  }
+
+  // Expose for session.js, link.js, upi.js
+  window.GptUi = Object.assign(window.GptUi || {}, { playErrorAlert, playSuccessAlert });
 
   // ── State ─────────────────────────────────────────────────────────
   const state = {
