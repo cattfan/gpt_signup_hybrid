@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -47,26 +48,52 @@ app = FastAPI(title="gpt_signup_hybrid web UI", version="0.1.0")
 # Module-level engine reference for graceful shutdown
 _engine = None
 
+# ── Launch flags truyền từ CLI → server ──
+# QUAN TRỌNG: CLI import module này dưới tên `web.server`, còn uvicorn chạy app
+# qua import string `gpt_signup_hybrid.web.server` → đây là HAI module object
+# KHÁC NHAU trong sys.modules (cùng file, khác tên). Vì vậy KHÔNG thể chỉ set
+# biến module-level từ CLI rồi mong route đọc được. Phải truyền qua os.environ
+# (env kế thừa qua cả subprocess khi --reload). Biến module-level giữ làm cache.
+_ENV_LOOPBACK_BIND = "GSH_WEB_LOOPBACK_BIND"
+_ENV_HIDE_REG = "GSH_WEB_HIDE_REG"
+
 # Track whether server is bound to loopback (safe to embed token in HTML)
 _is_loopback_bind: bool = True
 
-# Track "only UPI" launch mode — khi True, frontend chỉ hiển thị tab UPI QR
-# (ẩn Reg/Get Session/Settings). Dùng để giao máy cho người khác chạy UPI mà
-# không lộ các tab khác. Đây là launch flag (giống host/port), KHÔNG persist
-# vào Settings Store.
-_only_upi: bool = False
+# Track "hide Reg" launch mode — khi True, frontend ẩn tab Reg (vẫn giữ
+# Get Session / UPI QR / Settings). Dùng để giao máy cho người khác mà không
+# cho chạy Reg. Đây là launch flag (giống host/port), KHÔNG persist Settings Store.
+_hide_reg: bool = False
 
 
 def set_loopback_bind(is_loopback: bool) -> None:
     """Gọi từ CLI trước khi start server để set bind mode."""
     global _is_loopback_bind  # noqa: PLW0603
     _is_loopback_bind = is_loopback
+    os.environ[_ENV_LOOPBACK_BIND] = "1" if is_loopback else "0"
 
 
-def set_only_upi(only_upi: bool) -> None:
-    """Gọi từ CLI trước khi start server để bật chế độ chỉ-hiển-thị-UPI."""
-    global _only_upi  # noqa: PLW0603
-    _only_upi = only_upi
+def set_hide_reg(hide_reg: bool) -> None:
+    """Gọi từ CLI trước khi start server để bật chế độ ẩn tab Reg."""
+    global _hide_reg  # noqa: PLW0603
+    _hide_reg = hide_reg
+    os.environ[_ENV_HIDE_REG] = "1" if hide_reg else "0"
+
+
+def _is_loopback_bind_enabled() -> bool:
+    """Env ưu tiên (vượt ranh giới module-identity), fallback biến module."""
+    val = os.environ.get(_ENV_LOOPBACK_BIND)
+    if val is not None:
+        return val == "1"
+    return _is_loopback_bind
+
+
+def _hide_reg_enabled() -> bool:
+    """Env ưu tiên (vượt ranh giới module-identity), fallback biến module."""
+    val = os.environ.get(_ENV_HIDE_REG)
+    if val is not None:
+        return val == "1"
+    return _hide_reg
 
 
 @app.on_event("startup")
@@ -1643,12 +1670,12 @@ async def index() -> HTMLResponse:
     html_path = _STATIC_DIR / "index.html"
     # Chỉ embed token khi bind loopback — non-loopback yêu cầu user truyền token
     # qua URL ?token=... hoặc nhập thủ công (tránh leak token cho bất kỳ LAN client nào).
-    embedded_token = get_token() if _is_loopback_bind else ""
+    embedded_token = get_token() if _is_loopback_bind_enabled() else ""
     html = (
         html_path.read_text(encoding="utf-8")
         .replace("__ASSET_VERSION__", _asset_version())
         .replace("__AUTH_TOKEN__", embedded_token)
-        .replace("__ONLY_UPI__", "1" if _only_upi else "0")
+        .replace("__HIDE_REG__", "1" if _hide_reg_enabled() else "0")
     )
     return HTMLResponse(html)
 

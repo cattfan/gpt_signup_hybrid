@@ -32,8 +32,10 @@ HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-8083}"
 GSH_DB_PATH="${GSH_DB_PATH:-runtime/data.db}"
 RUNTIME_DIR="${RUNTIME_DIR:-runtime}"
-# Chỉ hiển thị tab UPI QR (ẩn Reg/Get Session/Settings). Env ONLY_UPI=1 hoặc cờ --only-upi.
-ONLY_UPI="${ONLY_UPI:-}"
+# Ẩn tab Reg (giữ Get Session/UPI QR/Settings). Env HIDE_REG=1 hoặc cờ --hide-reg.
+HIDE_REG="${HIDE_REG:-}"
+# Cho phép bind non-loopback (LAN/0.0.0.0). Env UNSAFE_EXPOSE=1 hoặc cờ --unsafe-expose-network.
+UNSAFE_EXPOSE="${UNSAFE_EXPOSE:-}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -45,11 +47,13 @@ while [ $# -gt 0 ]; do
     --db=*)     GSH_DB_PATH="${1#*=}"; shift ;;
     --runtime)  RUNTIME_DIR="$2"; shift 2 ;;
     --runtime=*) RUNTIME_DIR="${1#*=}"; shift ;;
-    --only-upi) ONLY_UPI="1"; shift ;;
+    --hide-reg) HIDE_REG="1"; shift ;;
+    --unsafe-expose-network) UNSAFE_EXPOSE="1"; shift ;;
     -h|--help)
-      echo "Usage: bash setup.sh [--port N] [--db PATH|name] [--host H] [--runtime DIR] [--only-upi]"
+      echo "Usage: bash setup.sh [--port N] [--db PATH|name] [--host H] [--runtime DIR] [--hide-reg] [--unsafe-expose-network]"
       echo "  --db nhận đường dẫn (vd runtime/data2.db) hoặc tên ngắn (vd db4444 → \$RUNTIME_DIR/db4444.db)"
-      echo "  --only-upi  chỉ hiển thị tab UPI QR (ẩn Reg/Get Session/Settings) — giao máy cho người khác chạy UPI"
+      echo "  --hide-reg  ẩn tab Reg (giữ Get Session/UPI QR/Settings) — giao máy cho người khác không chạy Reg"
+      echo "  --unsafe-expose-network  cho phép bind non-loopback (LAN/0.0.0.0) — UI lộ credentials, cần ý thức rủi ro"
       exit 0 ;;
     *) echo "ERROR: unknown arg: $1 (xem: bash setup.sh --help)" >&2; exit 1 ;;
   esac
@@ -211,10 +215,15 @@ echo "  RUNTIME: $RUNTIME_DIR"
 
 # Build cờ tùy chọn cho lệnh web. Dùng string (không mảng) để tương thích
 # bash 3.2 trên macOS với `set -u` — giá trị cố định, không chứa space.
-ONLY_UPI_FLAG=""
-if [ -n "$ONLY_UPI" ] && [ "$ONLY_UPI" != "0" ]; then
-  ONLY_UPI_FLAG="--only-upi"
-  echo "  MODE:    only-upi (chỉ hiển thị tab UPI QR)"
+HIDE_REG_FLAG=""
+if [ -n "$HIDE_REG" ] && [ "$HIDE_REG" != "0" ]; then
+  HIDE_REG_FLAG="--hide-reg"
+  echo "  MODE:    hide-reg (ẩn tab Reg)"
+fi
+UNSAFE_FLAG=""
+if [ -n "$UNSAFE_EXPOSE" ] && [ "$UNSAFE_EXPOSE" != "0" ]; then
+  UNSAFE_FLAG="--unsafe-expose-network"
+  echo "  EXPOSE:  non-loopback bind cho phép (UI lộ credentials — cẩn trọng)"
 fi
 echo ""
 echo "═══════════════════════════════════════════════════════════"
@@ -222,4 +231,4 @@ echo ""
 
 # CWD vẫn là $ROOT_DIR. Python load .pth → thấy shim dir →
 # import được `gpt_signup_hybrid` qua symlink.
-.venv/bin/python -m gpt_signup_hybrid web --host "$HOST" --port "$PORT" $ONLY_UPI_FLAG
+.venv/bin/python -m gpt_signup_hybrid web --host "$HOST" --port "$PORT" $HIDE_REG_FLAG $UNSAFE_FLAG

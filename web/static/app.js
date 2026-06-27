@@ -418,10 +418,10 @@
   }
 
   let _activeTabId = null;
-  // Only-UPI launch mode: server inject body[data-only-upi="1"] khi chạy
-  // `web --only-upi`. Frontend chỉ hiển thị tab UPI QR (CSS ẩn nav khác).
-  function _isOnlyUpiMode() {
-    return document.body.dataset.onlyUpi === '1';
+  // Hide-Reg launch mode: server inject body[data-hide-reg="1"] khi chạy
+  // `web --hide-reg`. Frontend ẩn tab Reg (CSS), giữ các tab khác.
+  function _isHideRegMode() {
+    return document.body.dataset.hideReg === '1';
   }
   function activateTab(tabId) {
     const prevTab = _activeTabId;
@@ -432,9 +432,7 @@
     document.querySelectorAll('.tab-content').forEach((tab) => {
       tab.classList.toggle('active', tab.id === `tab-${tabId}`);
     });
-    // Only-UPI mode: KHÔNG ghi đè ui.active_tab — giữ nguyên preference của user
-    // cho lần chạy bản đầy đủ sau này.
-    if (!_isOnlyUpiMode()) Settings.save('ui.active_tab', tabId, getAuthToken());
+    Settings.save('ui.active_tab', tabId, getAuthToken());
     document.dispatchEvent(new CustomEvent('gpt:tab', { detail: { tab: tabId, prev: prevTab } }));
   }
 
@@ -444,15 +442,12 @@
     document.querySelectorAll('.tab-btn').forEach((btn) => {
       btn.addEventListener('click', () => activateTab(btn.dataset.tab));
     });
-    // Only-UPI mode: ép tab UPI, bỏ qua saved preference + hidden list.
-    if (_isOnlyUpiMode()) {
-      activateTab('upi');
-      return;
-    }
     // Tab tạm ẩn (chưa dùng được). Mở lại: bỏ khỏi danh sách + bỏ comment nút nav trong index.html.
     const hiddenTabs = ['link', 'hme'];
+    // Hide-Reg mode: thêm 'reg' vào danh sách ẩn để không khởi tạo vào tab Reg.
+    if (_isHideRegMode()) hiddenTabs.push('reg');
     let initialTab = Settings.get('ui.active_tab') || document.querySelector('.tab-btn.active')?.dataset.tab || 'reg';
-    if (hiddenTabs.includes(initialTab)) initialTab = 'reg';
+    if (hiddenTabs.includes(initialTab)) initialTab = _isHideRegMode() ? 'session' : 'reg';
     activateTab(initialTab);
   }
 

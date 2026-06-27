@@ -458,12 +458,12 @@ def web_cmd(
         help="Cho phép bind non-loopback host (LAN/0.0.0.0). Yêu cầu vì web UI "
              "trả secret-bearing job state — phải ý thức rủi ro.",
     ),
-    only_upi: bool = typer.Option(
+    hide_reg: bool = typer.Option(
         False,
-        "--only-upi",
-        help="Chỉ hiển thị tab UPI QR (ẩn Reg/Get Session/Settings). Dùng khi "
-             "giao máy cho người khác chỉ chạy UPI. Lưu ý: chỉ ẩn UI — API các "
-             "tab khác vẫn truy cập được nếu có token.",
+        "--hide-reg",
+        help="Ẩn tab Reg (giữ Get Session/UPI QR/Settings). Dùng khi giao máy "
+             "cho người khác mà không cho chạy Reg. Lưu ý: chỉ ẩn UI — API tab "
+             "Reg vẫn truy cập được nếu có token.",
     ),
 ) -> None:
     """Start web UI server tại http://<host>:<port>/.
@@ -499,9 +499,9 @@ def web_cmd(
     from web.server import set_loopback_bind
     set_loopback_bind(is_loopback)
 
-    # Bật chế độ chỉ-hiển-thị-UPI (launch flag, không persist vào Settings Store)
-    from web.server import set_only_upi
-    set_only_upi(only_upi)
+    # Bật chế độ ẩn tab Reg (launch flag, không persist vào Settings Store)
+    from web.server import set_hide_reg
+    set_hide_reg(hide_reg)
 
     # Truyền local endpoint cho Cloudflare Tunnel manager — manager sẽ trỏ
     # tunnel về 127.0.0.1:<port> ngay cả khi uvicorn bind LAN.
@@ -513,8 +513,8 @@ def web_cmd(
     _token = _get_web_token()
 
     typer.echo(f"[web] starting at http://{host}:{port}/")
-    if only_upi:
-        typer.echo("[web] ONLY-UPI mode: chỉ hiển thị tab UPI QR.")
+    if hide_reg:
+        typer.echo("[web] HIDE-REG mode: ẩn tab Reg.")
     if not is_loopback:
         typer.echo(
             f"[web] WARNING: bind {host!r} — UI reachable từ LAN."

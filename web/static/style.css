@@ -1237,9 +1237,9 @@ body {
   border-color: rgba(155, 176, 197, 0.18);
 }
 
-/* Launch mode --only-upi: chỉ chừa nút nav UPI QR, ẩn mọi tab-btn khác.
-   Server inject body[data-only-upi="1"] khi chạy `web --only-upi`. */
-body[data-only-upi="1"] .tab-btn:not([data-tab="upi"]) {
+/* Launch mode --hide-reg: ẩn nút nav Reg, giữ Get Session/UPI QR/Settings.
+   Server inject body[data-hide-reg="1"] khi chạy `web --hide-reg`. */
+body[data-hide-reg="1"] .tab-btn[data-tab="reg"] {
   display: none;
 }
 
