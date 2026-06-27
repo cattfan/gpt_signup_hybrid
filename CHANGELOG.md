@@ -24,6 +24,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), [SemVer](https
 - Web UI và API routes hỗ trợ chọn `reg_mode` (`browser` | `pure_request` | `hybrid`).
 - Bump default concurrency 1 → 3 (3 signup song song trên 1 Camoufox process).
 
+#### iCloud v3 provider + Worker v2 relay
+- `IcloudV3Provider` (mail_providers.py): mailbox-specific URL binding, không cần auth token.
+- OTP extraction từ iCloud v3 Worker endpoint (`/readmail/<token>/data`).
+- CLI flag `--icloud-v3 <email|api_url>` với auto-detect provider + auto-derive email khi `--email` không truyền.
+- `SignupRequest.icloud_v3_url` (model field + regex validation).
+- Provider factory `build_provider_icloud_v3()` + auto-detect order: `icloud_v3` > `outlook` > `worker`.
+- Web UI: render iCloud v3 input fields + provider toggle (`web/mail_modes.py`, `web/manager.py`, `web/server.py`, `web/static/app.js`).
+
+#### OTP resend HAR alignment + UI success fanfare
+- `HybridChatGPTRelay._resend_otp()` đổi `/resend` → `/send` (golden HAR path) — bỏ fallback POST, dùng GET `/email-otp/send` consistent với `otp_send()`.
+- `playSuccessAlert()` (web/static/app.js): 5-note ascending fanfare + chord finale khi job transition sang `success`. Expose qua `window.GptUi`.
+- Bỏ `openQrModal()` redundant call ở job render (giữ copyQrToClipboard flow).
+
 ### Schema
 - Không thay đổi schema (vẫn v12 từ 3.2.0).
 
@@ -35,6 +48,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), [SemVer](https
   - `check_sidecar_proxy_decouple.py` — proxy sharing isolation.
   - `check_har_signup_deep.py`, `check_otp_continue_url.py`, `check_password_create_timing.py` — HAR alignment.
   - `smoke_hybrid_*.py` — asyncio safety, MFA inline, OTP loop, full reg flow.
+- iCloud v3: `check_icloud_v3.py`, `check_icloud_v3_fetch.py`, `check_cli_icloud_v3.py`, `smoke_reg_icloud_v3.py`, `syntax_check_icloud_v3.py`.
+- `smoke_loadable.py` — verify mọi provider import load không error.
 
 ### Operational notes
 - Hybrid mode khuyến nghị cho production: tận dụng Camoufox anti-detect + tốc độ HTTP layer.
