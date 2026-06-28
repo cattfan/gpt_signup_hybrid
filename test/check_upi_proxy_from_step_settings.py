@@ -146,22 +146,41 @@ def t07_const_unchanged():
 
 
 def t08_login_proxy_logic_source():
-    """Source check: login UPI LUÔN direct (bám golden Get Session).
+    """Source check: login UPI hỗ trợ proxy override qua ``upi.login_proxy_url``.
 
-    Golden ``get_session_pure_request`` login với proxy=None bất kể cấu hình.
-    UPI bám theo: ``login_proxy = None`` (proxy IN chỉ áp từ payment step theo
-    ``proxy_from_step``). Trước đây login qua proxy khi proxy_from_step<=1 → dễ
-    bị Cloudflare 403/captcha từ IP datacenter.
+    Behavior cũ: ``login_proxy = None`` hardcoded — login luôn DIRECT.
+    Behavior mới: ``effective_login_proxy`` chứa proxy URL nếu user set
+    ``upi.login_proxy_url`` (Step 1+2 cho geo-eligible promo plus), fallback
+    DIRECT nếu proxy dead (>=2 attempt retryable fail). Khi không set → vẫn
+    login DIRECT (luồng cũ giữ).
     """
     src = (ROOT / "web" / "upi_runner.py").read_text(encoding="utf-8")
-    assert "login_proxy = None" in src, (
-        "login_proxy phải = None (login luôn direct theo golden Get Session)"
+
+    # 1. Biến động `effective_login_proxy` thay cho hardcoded `login_proxy = None`.
+    assert "effective_login_proxy" in src, (
+        "thiếu biến effective_login_proxy (login proxy override + fallback)"
     )
-    assert "login_proxy = first_proxy if" not in src, (
-        "vẫn còn login_proxy conditional theo proxy_from_step (chưa bám golden)"
+
+    # 2. Hardcoded `login_proxy = None` cũ phải bị xóa.
+    import re as _re
+    assert not _re.search(r"(^|[^_])login_proxy\s*=\s*None\b", src), (
+        "vẫn còn hardcoded `login_proxy = None` — phải dùng effective_login_proxy động"
     )
-    assert "proxy=login_proxy," in src, (
-        "login (login_fn / get_session_pure_request) chưa nhận proxy=login_proxy"
+
+    # 3. Login call truyền proxy động (current_proxy/effective_login_proxy).
+    assert "proxy=current_proxy" in src, (
+        "login (login_fn / get_session_pure_request) chưa nhận proxy=current_proxy"
+    )
+
+    # 4. Step 2 (checkout) dùng effective_login_proxy với fallback first_proxy
+    #    theo proxy_from_step khi không set hoặc proxy dead (luồng cũ giữ).
+    pattern = _re.compile(
+        r"effective_login_proxy\s+is\s+not\s+None.*?"
+        r"first_proxy\s+if\s+proxy_from_step\s*<=\s*2",
+        _re.DOTALL,
+    )
+    assert pattern.search(src), (
+        "Step 2 (checkout) thiếu branch fallback first_proxy theo proxy_from_step"
     )
 
 

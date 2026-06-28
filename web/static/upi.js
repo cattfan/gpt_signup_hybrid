@@ -29,6 +29,7 @@
     reloginBlockStreak: $('upi-relogin-block-streak'),
     jobTimeout:    $('upi-job-timeout'),
     proxyFromStep: $('upi-proxy-from-step'),
+    loginProxyUrl: $('upi-login-proxy-url'),
     notifyToggle:  $('upi-notify-toggle'),
     jobList:       $('upi-job-list'),
     jobSummary:    $('upi-job-summary'),
@@ -875,6 +876,7 @@
       const proxyFromStep = parseInt(dom.proxyFromStep.value, 10) || 3;
       const maxOuterCycles = parseInt(dom.maxOuterCycles.value, 10) || 1;
       const reloginBlockStreak = parseInt(dom.reloginBlockStreak.value, 10);
+      const loginProxyUrl = (dom.loginProxyUrl.value || '').trim();
       await api('/api/upi/config', {
         method: 'POST',
         body: JSON.stringify({
@@ -887,6 +889,7 @@
           proxy_from_step: proxyFromStep,
           max_outer_cycles: maxOuterCycles,
           relogin_block_streak: isNaN(reloginBlockStreak) ? 12 : reloginBlockStreak,
+          login_proxy_url: loginProxyUrl,
         }),
       });
       await api('/api/upi/jobs', {
@@ -1108,6 +1111,22 @@
     }
   });
 
+  // Login proxy URL: lưu trên blur/change (Enter). Empty string = clear,
+  // backend normalize "" và áp luồng cũ. Format invalid → backend trả 400
+  // với message từ UpiJobManager.set_login_proxy_url validate.
+  dom.loginProxyUrl.addEventListener('change', async () => {
+    const raw = (dom.loginProxyUrl.value || '').trim();
+    dom.loginProxyUrl.value = raw;  // normalize hiển thị
+    try {
+      await api('/api/upi/config', {
+        method: 'POST', body: JSON.stringify({ login_proxy_url: raw }),
+      });
+    } catch (err) {
+      console.error(err);
+      await Dialog.alert({ message: 'Không lưu được login_proxy_url: ' + err.message });
+    }
+  });
+
   // session.login_flow đã chuyển sang tab Settings (settings_panel.js) — setting
   // toàn cục, không quản ở đây nữa.
 
@@ -1160,6 +1179,9 @@
     if (snap.proxy_from_step) dom.proxyFromStep.value = String(snap.proxy_from_step);
     if (typeof snap.max_outer_cycles === 'number') {
       dom.maxOuterCycles.value = snap.max_outer_cycles;
+    }
+    if (typeof snap.login_proxy_url === 'string') {
+      dom.loginProxyUrl.value = snap.login_proxy_url;
     }
 
     // Revoke blob cho job không còn trong snapshot (cleanup khi server clear).
@@ -1317,6 +1339,9 @@
     }
     if (typeof cfg.relogin_block_streak === 'number') {
       dom.reloginBlockStreak.value = cfg.relogin_block_streak;
+    }
+    if (typeof cfg.login_proxy_url === 'string') {
+      dom.loginProxyUrl.value = cfg.login_proxy_url;
     }
     state.approveRetries = cfg.approve_retries;
     dom.notifyToggle.checked = !!cfg.notify_enabled;

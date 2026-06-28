@@ -1580,6 +1580,7 @@ async def run_upi_qr_probe(
     auth_sink: dict[str, Any] | None = None,
     login_fn: Callable[..., Awaitable[dict[str, Any]]] | None = None,
     force_fresh: bool = False,
+    login_proxy_url: str | None = None,
 ) -> UpiQrResult:
     """Login + checkout + confirm UPI + approve loop → save QR PNG.
 
@@ -1607,6 +1608,14 @@ async def run_upi_qr_probe(
             (acc có thể đã lên Plus dù approve loop bị kill bởi timeout).
             None = không expose token sớm (caller lấy từ ``UpiQrResult`` cuối
             cùng — KHÔNG khả dụng nếu timeout).
+        login_proxy_url: proxy URL áp riêng cho Step 1 (login) + Step 2
+            (checkout) — use case: host IP non-VN/JP cần proxy geo-eligible
+            để ChatGPT trả promo plus. None/empty = giữ luồng cũ (login DIRECT,
+            Step 2 theo ``proxy_from_step``). Khi set, Step 1 thử qua proxy
+            tối đa ``LOGIN_PROXY_RETRY_QUOTA`` attempt; nếu retryable fail
+            hết quota → fallback DIRECT cho attempt cuối + Step 2 cũng quay
+            lại logic cũ (không che lỗi, log warning rõ ràng). Step 3-6 KHÔNG
+            đụng — vẫn dùng ``proxy_pool`` xoay.
 
     Returns:
         UpiQrResult — luôn trả (kể cả khi fail), KHÔNG raise. Caller check
@@ -1705,6 +1714,18 @@ async def run_upi_qr_probe(
         ("direct", ",".join(_direct_steps) if _direct_steps else "-"),
     )))
 
+    # Login proxy override (Step 1+2 ưu tiên URL riêng nếu user paste).
+    # In riêng dòng diagnostic để user verify đang áp đúng — KHÔNG ghi đè
+    # log "proxy policy" trên (giữ tham chiếu first_proxy/proxy_from_step
+    # cho Step 3-6).
+    _login_proxy_diag = (login_proxy_url or "").strip() or None
+    if _login_proxy_diag:
+        _safe_log(_fmt_step(
+            "upi", "login proxy override", "info",
+            f"{_mask_proxy(_login_proxy_diag)} → Step 1+2 "
+            f"(fallback DIRECT + Step 2 theo proxy_from_step nếu proxy dead)",
+        ))
+
     def _step_proxy_tag(step: int) -> str:
         """Format 'proxy=via ***@host:port' / 'proxy=DIRECT' cho step log.
 
@@ -1735,6 +1756,12 @@ async def run_upi_qr_probe(
     # ─────────────────────────────────────────────────────────────────
     LOGIN_MAX_ATTEMPTS = 3
     LOGIN_RETRY_DELAY = 3.0
+    # Khi user set ``login_proxy_url``, dùng proxy cho 2 attempt đầu. Nếu cả
+    # 2 fail retryable (network/timeout — proxy có thể dead) → attempt cuối
+    # DIRECT để vẫn cứu được job. Khi xảy ra fallback, Step 2 cũng quay về
+    # logic ``proxy_from_step`` (không dùng login proxy nữa) để không lặp lại
+    # cùng lỗi.
+    LOGIN_PROXY_RETRY_QUOTA = 2
 
     def _is_login_error_retryable(exc_msg: str) -> bool:
         return not is_fatal_login_error(exc_msg)
@@ -1742,33 +1769,53 @@ async def run_upi_qr_probe(
     _safe_log(_fmt_step("1/6", "login", "start", "pure-HTTP request_phase"))
     session_data: dict[str, Any] | None = None
     last_login_error: str | None = None
-    # ── Login LUÔN DIRECT (bám golden Get Session) ────────────────────
-    # Get Session (golden, session_phase.get_session_pure_request) login
-    # pure-HTTP với proxy=None BẤT KỂ cấu hình → tránh Cloudflare captcha/403
-    # từ IP datacenter (proxy IN). UPI bám theo: bước login (Step 1) luôn
-    # direct; proxy IN chỉ áp từ bước payment (Stripe) trở đi theo
-    # ``proxy_from_step`` trong pay_upi_http. Session-token KHÔNG bind IP nên
-    # login direct rồi approve qua proxy IN vẫn hợp lệ.
-    login_proxy = None
+    # ── Login proxy override: thử proxy trước, fallback DIRECT nếu dead ──
+    # Behavior cũ: Step1 LUÔN DIRECT (proxy=None) để tránh Cloudflare
+    # captcha/403 từ IP datacenter. UPI bám golden Get Session.
+    # Behavior mới: nếu user paste ``login_proxy_url`` (geo-eligible VN/JP
+    # cho promo plus) → ưu tiên proxy này cho Step 1 + 2. Proxy dead → log
+    # warning + fallback DIRECT (giữ flow tiếp, không che lỗi).
+    # Session-token KHÔNG bind IP nên login qua proxy A, approve qua pool B
+    # đều hợp lệ.
+    requested_login_proxy = (login_proxy_url or "").strip() or None
+    # Local copy có thể bị reset về None nếu detect dead — Step 2 đọc biến
+    # này để quyết định checkout proxy.
+    effective_login_proxy: str | None = requested_login_proxy
+    proxy_fallback_logged = False
     for login_attempt in range(1, LOGIN_MAX_ATTEMPTS + 1):
+        # Chọn proxy cho attempt này: trong quota → dùng proxy, hết quota →
+        # DIRECT (fallback). Lần đầu hết quota in log + clear effective.
+        if requested_login_proxy and login_attempt <= LOGIN_PROXY_RETRY_QUOTA:
+            current_proxy = requested_login_proxy
+        else:
+            if requested_login_proxy and not proxy_fallback_logged:
+                _safe_log(_fmt_step(
+                    "1/6", "login", "warn",
+                    f"login proxy fail {LOGIN_PROXY_RETRY_QUOTA} lần → fallback DIRECT "
+                    f"cho attempt {login_attempt}/{LOGIN_MAX_ATTEMPTS} + "
+                    f"Step 2 theo proxy_from_step={proxy_from_step}",
+                ))
+                proxy_fallback_logged = True
+                effective_login_proxy = None
+            current_proxy = None
         try:
             if login_fn is not None:
                 # Cache-aware login (UPI only): reuse cookie cache (revalidate
                 # /api/auth/session) → bỏ qua login. force_fresh=True (cycle
                 # re-login đổi IP) → manager wrapper bỏ reuse, login mới.
-                # proxy=None: login direct như golden (revalidate cũng direct).
-                session_data = await login_fn(force_fresh=force_fresh, proxy=login_proxy)
+                session_data = await login_fn(force_fresh=force_fresh, proxy=current_proxy)
             else:
                 session_data = await get_session_pure_request(
                     email=email,
                     password=password,
                     secret=secret,
-                    proxy=login_proxy,
+                    proxy=current_proxy,
                     log=_safe_log,
                 )
             if login_attempt > 1:
+                via = "qua proxy" if current_proxy else "DIRECT"
                 _safe_log(
-                    f"[upi-qr] login OK ở attempt {login_attempt}/{LOGIN_MAX_ATTEMPTS}"
+                    f"[upi-qr] login OK ở attempt {login_attempt}/{LOGIN_MAX_ATTEMPTS} ({via})"
                 )
             break
         except SessionError as exc:
@@ -1893,10 +1940,21 @@ async def run_upi_qr_probe(
                 ))
 
             # Step 2 — checkout creation (DIRECT - chatgpt API).
+            # Proxy precedence:
+            #   1. ``effective_login_proxy`` (login proxy override + còn alive)
+            #   2. fallback luồng cũ: ``first_proxy`` nếu proxy_from_step<=2,
+            #      ngược lại DIRECT.
+            # Khi effective_login_proxy bị reset = None do dead, mặc nhiên
+            # quay về branch fallback (luồng cũ).
             try:
+                _step2_proxy = (
+                    effective_login_proxy
+                    if effective_login_proxy is not None
+                    else (first_proxy if proxy_from_step <= 2 else None)
+                )
                 checkout = await _create_chatgpt_checkout(
                     sess, access_token=access_token, log=_silent,
-                    proxies=_proxy_dict(first_proxy if proxy_from_step <= 2 else None),
+                    proxies=_proxy_dict(_step2_proxy),
                 )
             except Exception as exc:  # noqa: BLE001
                 # Phase 1 fail → propagate (giữ behavior cũ là raise).

@@ -85,6 +85,7 @@ _EXACT_KEYS: frozenset[str] = frozenset([
     "upi.approve.restart_threshold", "upi.approve.max_restarts",
     "upi.proxy_from_step", "upi.max_outer_cycles",
     "upi.relogin_block_streak",
+    "upi.login_proxy_url",
     "session.login_flow",
     "telegram.bot_token", "telegram.chat_id",
     "tunnel.cloudflare.enabled",
@@ -102,6 +103,34 @@ _SENSITIVE_KEYS: frozenset[str] = frozenset([
 
 
 # --- Type constraint validators (design §3, R3.6) ---
+
+_PROXY_URL_SCHEMES = ("http", "https", "socks5", "socks5h")
+
+
+def _is_valid_proxy_url(value: str) -> bool:
+    """Validate proxy URL format: scheme://[user:pass@]host:port.
+
+    Pure function — KHÔNG kiểm tra reachability (proxy dead/alive là runtime
+    concern). Accept scheme ∈ {http, https, socks5, socks5h}; reject thiếu
+    hostname hoặc port.
+    """
+    from urllib.parse import urlparse
+    try:
+        parsed = urlparse(value)
+    except Exception:  # noqa: BLE001 — urlparse rất hiếm raise nhưng defensive
+        return False
+    if parsed.scheme not in _PROXY_URL_SCHEMES:
+        return False
+    if not parsed.hostname:
+        return False
+    try:
+        port = parsed.port  # raises ValueError nếu port không hợp lệ
+    except ValueError:
+        return False
+    if port is None or not (1 <= port <= 65535):
+        return False
+    return True
+
 
 def _validate_type_constraint(key: str, value: Any) -> None:
     """Validate type + range constraint cho một setting key.
@@ -578,6 +607,38 @@ def _validate_type_constraint(key: str, value: Any) -> None:
         if not (1 <= value <= 6):
             raise RepositoryError(
                 "set", ValueError(f"{key}: must be in [1, 6], got {value}")
+            )
+        return
+
+    if key == "upi.login_proxy_url":
+        # Proxy URL RIÊNG áp cho Step 1 (login) + Step 2 (checkout) — dùng khi
+        # host IP non-VN/JP cần proxy geo-eligible để ChatGPT trả promo plus.
+        # Empty/None = unset → fallback luồng cũ (login DIRECT, Step 2 theo
+        # `upi.proxy_from_step`). Runtime tự fallback DIRECT nếu proxy dead
+        # (>=2 attempt retryable fail) — không che lỗi, log warning rõ ràng.
+        # Format: `scheme://[user:pass@]host:port` với scheme ∈
+        # {http, https, socks5, socks5h}.
+        if value is None:
+            return  # null = clear
+        if not isinstance(value, str):
+            raise RepositoryError(
+                "set", TypeError(f"{key}: must be str or null, got {type(value).__name__}")
+            )
+        if len(value) > 500:
+            raise RepositoryError(
+                "set", ValueError(f"{key}: len must be <= 500, got {len(value)}")
+            )
+        stripped = value.strip()
+        if stripped == "":
+            return  # empty = clear (cùng ý nghĩa với null)
+        if not _is_valid_proxy_url(stripped):
+            raise RepositoryError(
+                "set",
+                ValueError(
+                    f"{key}: invalid proxy URL, expect "
+                    f"'scheme://[user:pass@]host:port' với "
+                    f"scheme ∈ http/https/socks5/socks5h"
+                ),
             )
         return
 

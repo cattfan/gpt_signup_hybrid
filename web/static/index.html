@@ -262,6 +262,10 @@
           <span class="input-label">Retry delay (s)</span>
           <input type="number" id="upi-approve-retry-delay" value="2" min="2" max="60" step="1" />
         </label>
+        <label class="input-group config-field-long" title="Proxy URL ÁP RIÊNG cho Step 1 (login) + Step 2 (checkout) — dùng khi host IP non-VN/JP cần proxy geo-eligible để ChatGPT trả promo plus. Format: scheme://[user:pass@]host:port (scheme ∈ http/https/socks5/socks5h). Bỏ trống = luồng cũ (login DIRECT, Step 2 theo Proxy from step). Proxy dead sẽ tự fallback DIRECT.">
+          <span class="input-label">Login proxy URL</span>
+          <input type="text" id="upi-login-proxy-url" placeholder="http://user:pass@host:port" autocomplete="off" spellcheck="false" />
+        </label>
         <span class="settings-divider" aria-hidden="true"></span>
         <label class="toggle-wrap" id="upi-notify-wrap" title="Bật để gửi QR + thông tin account qua Telegram khi job xong">
           <input type="checkbox" id="upi-notify-toggle" />

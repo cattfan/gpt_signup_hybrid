@@ -1803,6 +1803,10 @@ class SetUpiConfigRequest(BaseModel):
     proxy_from_step: int | None = Field(default=None, ge=1, le=6)
     max_outer_cycles: int | None = Field(default=None, ge=1, le=5)
     relogin_block_streak: int | None = Field(default=None, ge=0, le=1000)
+    # Login proxy URL RIÊNG (Step 1+2). Empty string = clear (luồng cũ).
+    # Validate format chi tiết delegate cho UpiJobManager.set_login_proxy_url
+    # (raise ValueError → 400) — Pydantic ở đây chỉ check length.
+    login_proxy_url: str | None = Field(default=None, max_length=500)
 
 
 class SetTelegramConfigRequest(BaseModel):
@@ -1990,6 +1994,7 @@ async def get_upi_config() -> JSONResponse:
         "proxy_from_step": um.proxy_from_step,
         "max_outer_cycles": um.max_outer_cycles,
         "relogin_block_streak": um.relogin_block_streak,
+        "login_proxy_url": um.login_proxy_url,
         "notify_enabled": get_telegram_notifier().enabled,
     })
 
@@ -2056,6 +2061,14 @@ async def set_upi_config(payload: SetUpiConfigRequest) -> JSONResponse:
             settings_writes["upi.relogin_block_streak"] = payload.relogin_block_streak
         except ValueError as exc:
             raise HTTPException(400, str(exc))
+    if payload.login_proxy_url is not None:
+        # ``None`` = field không gửi (Pydantic default), không đụng setting.
+        # Empty string = user clear → set_login_proxy_url normalize về "".
+        try:
+            um.set_login_proxy_url(payload.login_proxy_url)
+            settings_writes["upi.login_proxy_url"] = um.login_proxy_url
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
     if payload.notify_enabled is not None:
         get_telegram_notifier().set_enabled(payload.notify_enabled)
         settings_writes["upi.notify_enabled"] = payload.notify_enabled
@@ -2076,6 +2089,7 @@ async def set_upi_config(payload: SetUpiConfigRequest) -> JSONResponse:
         "proxy_from_step": um.proxy_from_step,
         "max_outer_cycles": um.max_outer_cycles,
         "relogin_block_streak": um.relogin_block_streak,
+        "login_proxy_url": um.login_proxy_url,
         "notify_enabled": get_telegram_notifier().enabled,
     })
 
