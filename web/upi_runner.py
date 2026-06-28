@@ -1714,16 +1714,16 @@ async def run_upi_qr_probe(
         ("direct", ",".join(_direct_steps) if _direct_steps else "-"),
     )))
 
-    # Login proxy override (Step 1+2 ưu tiên URL riêng nếu user paste).
-    # In riêng dòng diagnostic để user verify đang áp đúng — KHÔNG ghi đè
-    # log "proxy policy" trên (giữ tham chiếu first_proxy/proxy_from_step
-    # cho Step 3-6).
-    _login_proxy_diag = (login_proxy_url or "").strip() or None
-    if _login_proxy_diag:
+    # Login proxy override (Step 1+2 ưu tiên URL/raw riêng nếu user paste).
+    # Diagnostic chỉ inform — materialize canonical xảy ra trong login loop
+    # phía dưới (1 lần duy nhất → SID stable cho {SID} template).
+    _login_proxy_raw = (login_proxy_url or "").strip() or None
+    if _login_proxy_raw:
         _safe_log(_fmt_step(
             "upi", "login proxy override", "info",
-            f"{_mask_proxy(_login_proxy_diag)} → Step 1+2 "
-            f"(fallback DIRECT + Step 2 theo proxy_from_step nếu proxy dead)",
+            f"{_mask_proxy(_login_proxy_raw)} → Step 1+2 "
+            f"(fallback DIRECT + Step 2 theo proxy_from_step nếu proxy dead "
+            f"hoặc format lỗi)",
         ))
 
     def _step_proxy_tag(step: int) -> str:
@@ -1777,7 +1777,14 @@ async def run_upi_qr_probe(
     # warning + fallback DIRECT (giữ flow tiếp, không che lỗi).
     # Session-token KHÔNG bind IP nên login qua proxy A, approve qua pool B
     # đều hợp lệ.
-    requested_login_proxy = (login_proxy_url or "").strip() or None
+    # Materialize raw line/template → URL concrete (cùng helper với pool).
+    # Format lỗi → _materialize_or_log_warning trả None + log warning →
+    # treat như không set (luồng cũ giữ).
+    _login_raw = (login_proxy_url or "").strip() or None
+    requested_login_proxy = (
+        _materialize_or_log_warning(_login_raw, _safe_log)
+        if _login_raw else None
+    )
     # Local copy có thể bị reset về None nếu detect dead — Step 2 đọc biến
     # này để quyết định checkout proxy.
     effective_login_proxy: str | None = requested_login_proxy

@@ -4420,10 +4420,17 @@ class UpiJobManager:
         return self._login_proxy_url
 
     def set_login_proxy_url(self, value: str | None) -> None:
-        """Set login proxy URL. ``None``/empty/whitespace = clear (luồng cũ).
+        """Set login proxy. ``None``/empty/whitespace = clear (luồng cũ).
 
-        Validate format đồng bộ với ``db/repositories._is_valid_proxy_url`` —
-        scheme ∈ {http, https, socks5, socks5h}, host + port bắt buộc.
+        Accept format (đồng bộ với Setting Proxy Pool):
+          - ``host:port``                          (no-auth shorthand)
+          - ``host:port:user:pass``                (shorthand 4-part)
+          - ``scheme://[user:pass@]host:port``     (URL chuẩn)
+          - Template ``{SID}`` cho sticky session (giống pool).
+
+        Lưu RAW line trong DB — runtime ``upi_runner`` materialize lúc job
+        start (gen SID nếu có template). Validate cú pháp qua
+        ``materialize_proxy`` — accept tất cả format trên.
         """
         if value is None:
             self._login_proxy_url = ""
@@ -4438,13 +4445,16 @@ class UpiJobManager:
             return
         if len(stripped) > 500:
             raise ValueError("login_proxy_url quá dài (>500 ký tự)")
-        from db.repositories import _is_valid_proxy_url  # local import tránh cycle
-        if not _is_valid_proxy_url(stripped):
+        from .proxy_format import materialize_proxy
+        try:
+            materialize_proxy(stripped)
+        except ValueError as exc:
             raise ValueError(
-                "login_proxy_url format sai, cần 'scheme://[user:pass@]host:port' "
-                "với scheme ∈ http/https/socks5/socks5h"
-            )
-        self._login_proxy_url = stripped
+                f"login_proxy_url format sai (accept 'host:port[:user[:pass]]' "
+                f"hoặc 'scheme://[user:pass@]host:port', template {{SID}} OK): "
+                f"{exc}"
+            ) from exc
+        self._login_proxy_url = stripped  # LƯU RAW (runtime materialize)
 
     def apply_settings(self, settings: dict) -> None:
         """Hydrate fields từ settings dict (startup boot)."""

@@ -611,13 +611,16 @@ def _validate_type_constraint(key: str, value: Any) -> None:
         return
 
     if key == "upi.login_proxy_url":
-        # Proxy URL RIÊNG áp cho Step 1 (login) + Step 2 (checkout) — dùng khi
-        # host IP non-VN/JP cần proxy geo-eligible để ChatGPT trả promo plus.
-        # Empty/None = unset → fallback luồng cũ (login DIRECT, Step 2 theo
-        # `upi.proxy_from_step`). Runtime tự fallback DIRECT nếu proxy dead
-        # (>=2 attempt retryable fail) — không che lỗi, log warning rõ ràng.
-        # Format: `scheme://[user:pass@]host:port` với scheme ∈
-        # {http, https, socks5, socks5h}.
+        # Proxy login RIÊNG áp cho Step 1 (login) + Step 2 (checkout) — dùng
+        # khi host IP non-VN/JP cần proxy geo-eligible để ChatGPT trả promo
+        # plus. Empty/None = unset → fallback luồng cũ (login DIRECT, Step 2
+        # theo `upi.proxy_from_step`). Runtime tự fallback DIRECT nếu proxy
+        # dead (>=2 attempt retryable fail) — không che lỗi, log warning rõ.
+        # Format ACCEPT (đồng bộ với Setting Proxy Pool):
+        #   - `host:port`                          (no-auth shorthand)
+        #   - `host:port:user:pass`                (shorthand 4-part)
+        #   - `scheme://[user:pass@]host:port`     (URL chuẩn)
+        # Hỗ trợ template `{SID}` (sticky session — giống pool).
         if value is None:
             return  # null = clear
         if not isinstance(value, str):
@@ -631,13 +634,28 @@ def _validate_type_constraint(key: str, value: Any) -> None:
         stripped = value.strip()
         if stripped == "":
             return  # empty = clear (cùng ý nghĩa với null)
-        if not _is_valid_proxy_url(stripped):
+        # Validate cú pháp qua `materialize_proxy` — accept cả 3 format trên.
+        # Template `{SID}` giữ nguyên trong line lưu DB; runtime materialize
+        # gen SID mới mỗi job. Materialize 1 lần ở đây CHỈ để verify format.
+        try:
+            from web.proxy_format import materialize_proxy
+            materialize_proxy(stripped)
+        except ImportError as exc:
+            # Đường vòng — web layer chưa khả dụng (test isolation). Skip
+            # materialize validate, dùng fallback cơ bản: phải có dấu ':'.
+            if ":" not in stripped:
+                raise RepositoryError(
+                    "set",
+                    ValueError(f"{key}: invalid proxy line, thiếu 'host:port'"),
+                ) from exc
+        except ValueError as exc:
             raise RepositoryError(
                 "set",
                 ValueError(
-                    f"{key}: invalid proxy URL, expect "
-                    f"'scheme://[user:pass@]host:port' với "
-                    f"scheme ∈ http/https/socks5/socks5h"
+                    f"{key}: invalid proxy format — accept "
+                    f"'host:port[:user[:pass]]' hoặc "
+                    f"'scheme://[user:pass@]host:port' (template {{SID}} OK). "
+                    f"Chi tiết: {exc}"
                 ),
             )
         return

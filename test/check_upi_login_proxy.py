@@ -49,31 +49,48 @@ def tc01_whitelist() -> None:
 
 # ── TC-02 ─────────────────────────────────────────────────────────────
 def tc02_proxy_url_validator() -> None:
-    from gpt_signup_hybrid_new.db.repositories import _is_valid_proxy_url
-    valid = [
-        "http://1.2.3.4:8080",
-        "http://user:pass@1.2.3.4:8080",
-        "https://proxy.example.com:443",
-        "socks5://user:p@ss@1.2.3.4:1080",
-        "socks5h://1.2.3.4:1080",
-        "http://user:pass@vn-proxy.example.com:12345",
-    ]
-    for u in valid:
-        if not _is_valid_proxy_url(u):
-            _fail("TC-02", f"valid URL bị reject: {u!r}")
-    invalid = [
-        "",
-        "1.2.3.4:8080",          # thiếu scheme
-        "ftp://1.2.3.4:21",       # scheme không support
-        "http://1.2.3.4",         # thiếu port
-        "http://:8080",           # thiếu host
-        "not a url",
-        "http://1.2.3.4:99999",   # port > 65535
-    ]
-    for u in invalid:
-        if _is_valid_proxy_url(u):
-            _fail("TC-02", f"invalid URL bị accept: {u!r}")
-    _ok("TC-02 _is_valid_proxy_url accept/reject đúng")
+    """Validate Setter accept cả raw line + URL + template {SID}."""
+    from gpt_signup_hybrid_new.web.manager import UpiJobManager
+
+    mgr = UpiJobManager(max_concurrent=1)
+    try:
+        valid = [
+            # URL chuẩn
+            "http://1.2.3.4:8080",
+            "http://user:pass@1.2.3.4:8080",
+            "https://proxy.example.com:443",
+            "socks5h://1.2.3.4:1080",
+            # Raw shorthand (đồng bộ Setting Proxy Pool)
+            "1.2.3.4:8080",
+            "1.2.3.4:8080:user:pass",
+            "116.99.2.170:63618:wtxah_6c696:C24btdrm",  # data user gửi
+            # Template {SID}
+            "1.2.3.4:8080:user-{SID}:pass",
+            "1.2.3.4:8080:user-{sid}:pass",
+        ]
+        for v in valid:
+            try:
+                mgr.set_login_proxy_url(v)
+            except ValueError as exc:
+                _fail("TC-02", f"valid format reject: {v!r} :: {exc}")
+            assert mgr.login_proxy_url == v.strip(), \
+                f"raw line phải lưu nguyên dạng, got {mgr.login_proxy_url!r}"
+
+        # Empty/whitespace → clear (không raise)
+        for v in ("", "   "):
+            mgr.set_login_proxy_url(v)
+            assert mgr.login_proxy_url == "", f"empty/whitespace phải clear, v={v!r}"
+
+        # Reject: format materialize fail (single token, không có ':')
+        for v in ("garbage_no_colon", "single_token"):
+            try:
+                mgr.set_login_proxy_url(v)
+            except ValueError:
+                continue
+            _fail("TC-02", f"invalid format accept: {v!r}")
+    finally:
+        mgr.shutdown()
+    _ok("TC-02 setter accept raw/URL/template, reject garbage")
 
 
 # ── TC-03 ─────────────────────────────────────────────────────────────
@@ -84,9 +101,16 @@ def tc03_type_constraint() -> None:
     )
     KEY = "upi.login_proxy_url"
 
-    # Accept: None, empty string, whitespace, hợp lệ
-    for v in (None, "", "   ", "http://1.2.3.4:8080",
-              "http://user:pass@vn-proxy.example.com:12345"):
+    # Accept: None, empty string, whitespace, hợp lệ (URL + raw shorthand)
+    for v in (
+        None, "", "   ",
+        "http://1.2.3.4:8080",
+        "http://user:pass@vn-proxy.example.com:12345",
+        "1.2.3.4:8080",
+        "1.2.3.4:8080:user:pass",
+        "116.99.2.170:63618:wtxah_6c696:C24btdrm",
+        "1.2.3.4:8080:user-{SID}:pass",
+    ):
         try:
             _validate_type_constraint(KEY, v)
         except RepositoryError as exc:
@@ -100,7 +124,7 @@ def tc03_type_constraint() -> None:
             continue
         _fail("TC-03", f"non-str {v!r} should reject")
 
-    # Reject: quá dài
+    # Reject: quá dài (>500)
     long_url = "http://1.2.3.4:8080?" + "a" * 600
     try:
         _validate_type_constraint(KEY, long_url)
@@ -109,14 +133,14 @@ def tc03_type_constraint() -> None:
     else:
         _fail("TC-03", "URL > 500 ký tự nên reject")
 
-    # Reject: format sai
-    for v in ("ftp://1.2.3.4:21", "1.2.3.4:8080", "http://no-port", "garbage"):
+    # Reject: format không materialize được
+    for v in ("garbage", "single_token"):
         try:
             _validate_type_constraint(KEY, v)
         except RepositoryError:
             continue
         _fail("TC-03", f"format sai {v!r} nên reject")
-    _ok("TC-03 type constraint accept/reject đúng")
+    _ok("TC-03 type constraint accept/reject đúng (raw + URL + template)")
 
 
 # ── TC-04 ─────────────────────────────────────────────────────────────
@@ -129,9 +153,18 @@ def tc04_manager_hydration() -> None:
         # Default
         assert mgr.login_proxy_url == "", f"default phải empty, got {mgr.login_proxy_url!r}"
 
-        # Setter accept hợp lệ
+        # Setter accept URL chuẩn
         mgr.set_login_proxy_url("http://1.2.3.4:8080")
         assert mgr.login_proxy_url == "http://1.2.3.4:8080"
+
+        # Setter accept raw shorthand (đồng bộ Setting Proxy Pool) — LƯU RAW
+        mgr.set_login_proxy_url("116.99.2.170:63618:wtxah_6c696:C24btdrm")
+        assert mgr.login_proxy_url == "116.99.2.170:63618:wtxah_6c696:C24btdrm", \
+            f"raw line phải lưu nguyên dạng, got {mgr.login_proxy_url!r}"
+
+        # Setter accept template {SID}
+        mgr.set_login_proxy_url("1.2.3.4:8080:user-{SID}:pass")
+        assert mgr.login_proxy_url == "1.2.3.4:8080:user-{SID}:pass"
 
         # Setter accept None + empty + whitespace → clear
         mgr.set_login_proxy_url(None)
@@ -145,7 +178,7 @@ def tc04_manager_hydration() -> None:
 
         # Setter reject format sai
         try:
-            mgr.set_login_proxy_url("not a url")
+            mgr.set_login_proxy_url("garbage_no_colon")
         except ValueError:
             pass
         else:
@@ -158,7 +191,11 @@ def tc04_manager_hydration() -> None:
         else:
             _fail("TC-04", "non-str phải raise ValueError")
 
-        # apply_settings hydrate
+        # apply_settings hydrate raw line
+        mgr.apply_settings({"upi.login_proxy_url": "5.6.7.8:9999:u:p"})
+        assert mgr.login_proxy_url == "5.6.7.8:9999:u:p"
+
+        # apply_settings hydrate URL
         mgr.apply_settings({"upi.login_proxy_url": "http://5.6.7.8:9999"})
         assert mgr.login_proxy_url == "http://5.6.7.8:9999"
 
@@ -170,7 +207,7 @@ def tc04_manager_hydration() -> None:
         mgr.shutdown()
 
     asyncio.run(_run())
-    _ok("TC-04 UpiJobManager.login_proxy_url property/setter/hydrate")
+    _ok("TC-04 UpiJobManager.login_proxy_url property/setter/hydrate raw+URL+template")
 
 
 # ── TC-05 ─────────────────────────────────────────────────────────────
@@ -246,7 +283,7 @@ def tc09_html_input() -> None:
 
 # ── TC-10 ─────────────────────────────────────────────────────────────
 def tc10_runner_fallback_logic() -> None:
-    """AST verify upi_runner giữ luồng cũ khi login_proxy_url=None."""
+    """AST verify upi_runner giữ luồng cũ khi login_proxy_url=None + materialize raw."""
     src = (ROOT / "web" / "upi_runner.py").read_text(encoding="utf-8")
 
     # Có biến effective_login_proxy
@@ -272,7 +309,19 @@ def tc10_runner_fallback_logic() -> None:
     if re.search(r"(^|[^_])login_proxy\s*=\s*None\b", src):
         _fail("TC-10", "hardcoded `login_proxy = None` cũ chưa được thay")
 
-    _ok("TC-10 upi_runner.py giữ luồng cũ + fallback DIRECT khi dead")
+    # Materialize raw line/template qua helper chung (accept raw + URL + {SID}).
+    # Pattern: requested_login_proxy = _materialize_or_log_warning(...).
+    if not re.search(
+        r"requested_login_proxy\s*=\s*\(?\s*_materialize_or_log_warning",
+        src,
+    ):
+        _fail(
+            "TC-10",
+            "thiếu materialize qua _materialize_or_log_warning — sẽ không "
+            "accept raw line 'host:port:user:pass' từ user"
+        )
+
+    _ok("TC-10 upi_runner.py giữ luồng cũ + fallback DIRECT + materialize raw")
 
 
 # ── Main ──────────────────────────────────────────────────────────────
