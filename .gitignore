@@ -65,7 +65,7 @@ data.ms
 
 
 # Kiro IDE / agent skills / planning
-.kiro/
+# .kiro/
 
 # GitNexus code intelligence cache (lớn, regenerate được)
 .gitnexus/
