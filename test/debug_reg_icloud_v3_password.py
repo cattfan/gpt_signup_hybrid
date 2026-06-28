@@ -26,6 +26,11 @@ _ACCOUNTS: list[str] = [
     "seemly.kettles_6v+t7iv8@icloud.com|https://icloud-cf-mail-v2.n5pskgzs9g.workers.dev/readmail/NllonToFc8-cU5drw0V4mo7SYfpcggKu/data",
     "did.sirens_9a+7cg5yjw@icloud.com|https://icloud-cf-mail-v2.n5pskgzs9g.workers.dev/readmail/b6E-BBVH2Dw2SR3hG7JHEO9iW2WD9_ns/data",
     "freest.woolens.50+6w04u@icloud.com|https://icloud-cf-mail-v2.n5pskgzs9g.workers.dev/readmail/ZejAOPW7EA_YmM9Gt8p01wcryBQhOING/data",
+    "splits-malt2j+gh9sxq@icloud.com|https://icloud-cf-mail-v2.n5pskgzs9g.workers.dev/readmail/gneo4du-W9z_reLb7GgtFJvo01o_oxKm/data",
+    "spar.octant4o+epjekz@icloud.com|https://icloud-cf-mail-v2.n5pskgzs9g.workers.dev/readmail/awcJejZZsJx81HGjqo-VAHLttEU3Oe9b/data",
+    "seemly.kettles_6v+9uzpt@icloud.com|https://icloud-cf-mail-v2.n5pskgzs9g.workers.dev/readmail/P2xqZR3exwTns6LNK9BEjVljNI4XubfO/data",
+    "did.sirens_9a+nmhq2@icloud.com|https://icloud-cf-mail-v2.n5pskgzs9g.workers.dev/readmail/LLQ0MtxPx3v4TdJmME-YlW2xXgfkHZYh/data",
+    "freest.woolens.50+cs9iv@icloud.com|https://icloud-cf-mail-v2.n5pskgzs9g.workers.dev/readmail/C2Yfn4rOxe7xLx2pyDB0q1dn44Nxf4GZ/data",
 ]
 
 

@@ -488,6 +488,29 @@ class AutoRegRunner:
                     error_msg = result.error or "signup failed"
                     # Loại proxy lỗi network khỏi pool (mark_dead key = raw line, F-J).
                     self._note_proxy_failure(email_proxy_line, error_msg, prefix=prefix)
+
+                    # ── Skip retry cho error permanent (không phục hồi được) ─
+                    # Các signal "email đã đăng ký" hoặc "account đã tồn tại"
+                    # → retry vô ích, server vẫn trả cùng lý do. Mark email
+                    # disabled ngay để autoreg pick email kế.
+                    #   - invalid_auth_step: server từ chối /register vì auth state
+                    #   - user_already_exists: /about-you trả error_code này
+                    #   - AccountAlreadyExistsError: exception class browser_phase raise
+                    error_lower = error_msg.lower()
+                    permanent_signals = (
+                        "invalid_auth_step",
+                        "đã được đăng ký",
+                        "user_already_exists",
+                        "accountalreadyexistserror",
+                    )
+                    if any(sig in error_lower for sig in permanent_signals):
+                        self._stats.errors += 1
+                        await self._log("error", f"{prefix} Email đã đăng ký — skip retry, mark disabled: {error_msg}", {
+                            "email": email, "error": error_msg,
+                        })
+                        await self._mark_email_failed(email)
+                        return
+
                     # Retry?
                     if attempt < max_attempts:
                         delay = self._config.auto_retry_delay * attempt
@@ -580,6 +603,24 @@ class AutoRegRunner:
                 error_msg = f"{type(exc).__name__}: {exc}"
                 # Loại proxy lỗi network khỏi pool (mark_dead key = raw line, F-J).
                 self._note_proxy_failure(email_proxy_line, exc, prefix=prefix)
+
+                # Skip retry cho error permanent — đồng nhất với nhánh
+                # ``not result.success`` ở trên.
+                error_lower = error_msg.lower()
+                permanent_signals = (
+                    "invalid_auth_step",
+                    "đã được đăng ký",
+                    "user_already_exists",
+                    "accountalreadyexistserror",
+                )
+                if any(sig in error_lower for sig in permanent_signals):
+                    self._stats.errors += 1
+                    await self._log("error", f"{prefix} Email đã đăng ký — skip retry, mark disabled: {error_msg}", {
+                        "email": email, "error": error_msg,
+                    })
+                    await self._mark_email_failed(email)
+                    return
+
                 if attempt < max_attempts:
                     delay = self._config.auto_retry_delay * attempt
                     await self._log("warn", f"{prefix} {error_msg} — retry in {delay:.0f}s", {

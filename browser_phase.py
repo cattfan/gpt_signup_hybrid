@@ -1073,6 +1073,46 @@ async def _drive_signup_flow(
                 continue
 
             body_str = json.dumps(body) if isinstance(body, dict) else (body_text or "")
+
+            # ── Detailed debug log khi register fail (status != 200) ──────
+            # Capture đầy đủ: URL, status, body, request headers, page state
+            # để post-mortem analysis khi invalid_auth_step/4xx xảy ra.
+            try:
+                _req = resp.request
+                _req_url = getattr(_req, "url", "?")
+                _req_method = getattr(_req, "method", "?")
+            except Exception:
+                _req_url = "?"
+                _req_method = "?"
+            try:
+                _resp_headers = dict(getattr(resp, "headers", {}))
+            except Exception:
+                _resp_headers = {}
+            log(
+                f"[flow] REGISTER FAIL DEBUG: status={status} "
+                f"req={_req_method} {_req_url} "
+                f"page_url={page.url} "
+                f"set_cookie={'Set-Cookie' in _resp_headers or 'set-cookie' in _resp_headers}"
+            )
+            log(f"[flow] REGISTER FAIL body: {body_str[:400]}")
+
+            # ── Detect "invalid_auth_step" (400) ──────────────────────────
+            # OpenAI trả code "invalid_auth_step" khi:
+            #   - Email đã có account (đã hoàn tất signup từ trước) → server từ
+            #     chối /register vì auth state machine không cho phép
+            #   - State machine bị out-of-sync (rare: session expired giữa load
+            #     và submit, force goto bypass step)
+            #
+            # request_phase.py line 1625 đã treat case này là "email đã đăng ký"
+            # cho HTTP flow. Browser flow mirror: fail-fast với message rõ ràng
+            # để autoreg mark email disabled (KHÔNG retry vô ích).
+            if status == 400 and "invalid_auth_step" in body_str.lower():
+                raise BrowserPhaseError(
+                    f"email {request.email} đã được đăng ký "
+                    f"(invalid_auth_step) — server từ chối /register vì auth "
+                    f"state không cho phép. Cần email mới để reg. URL: {page.url}"
+                )
+
             if "already" in body_str.lower() or "exists" in body_str.lower() or status == 409:
                 log(f"[flow] account already exists (HTTP {status}) — page sẽ chuyển login")
                 from _human_input import dwell as _dwell_exists

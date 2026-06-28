@@ -55,6 +55,19 @@ _NO_RETRY_ERROR_KEYS = (
     "AADSTS50034",
     "AADSTS50057",
     "combo dead",
+    # ── Permanent: email/account đã tồn tại — retry vô ích ─────────────
+    # OpenAI server signals dùng để identify account đã đăng ký từ trước.
+    # iCloud HME `+alias` được dedupe về base email → khi base đã reg,
+    # mọi alias mới đều bị từ chối. Retry không recover được.
+    #
+    # invalid_auth_step: server từ chối /register vì auth state không cho
+    #   phép (browser_phase raise "email X đã được đăng ký (invalid_auth_step)")
+    # user_already_exists: /about-you trả error_code này
+    # accountalreadyexistserror: exception class browser_phase raise
+    "invalid_auth_step",
+    "đã được đăng ký",
+    "user_already_exists",
+    "AccountAlreadyExistsError",
 )
 
 
