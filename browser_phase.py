@@ -306,7 +306,7 @@ async def _wait_otp_form(page, *, timeout_seconds: float, log) -> str:
     raise BrowserPhaseError(f"OTP input không xuất hiện sau {timeout_seconds}s. URL: {page.url}")
 
 
-async def _submit_otp(ctx, page, *, otp_code: str, otp_selector: str, log) -> tuple[str | None, str]:
+async def _submit_otp(ctx, page, *, otp_code: str, otp_selector: str, log) -> tuple[str | None, str, int]:
     """Submit OTP qua UI (human-like type + Enter), wrap trong expect_response
     để detect server validate sớm. Fallback: gọi validate API qua
     ``context.request``.
@@ -322,7 +322,7 @@ async def _submit_otp(ctx, page, *, otp_code: str, otp_selector: str, log) -> tu
         UI không trigger POST → fallback ``_submit_otp_via_api`` ngay.
 
     Returns:
-        Tuple ``(continue_url, source)``:
+        Tuple ``(continue_url, source, status)``:
           - ``continue_url`` (str) khi server validate OK + trả continue_url
             trong body, ``None`` khi 4xx hoặc body thiếu.
           - ``source``: ``"ui"`` khi UI POST đi qua form thật của page (page
@@ -330,12 +330,18 @@ async def _submit_otp(ctx, page, *, otp_code: str, otp_selector: str, log) -> tu
             trigger NS_BINDING_ABORTED nếu cố tình). ``"api"`` khi submit
             qua ``ctx.request.post`` fallback — page KHÔNG biết navigate,
             caller phải ``page.goto(continue_url)`` thủ công.
+          - ``status``: HTTP status thật từ server (200 = code đã consume +
+            validated, 400/401 = wrong/expired code, 0 = không observe được
+            response vd page bị crash trước khi POST đi). Caller dùng status
+            để quyết định resubmit hay re-poll — KHÔNG được resubmit code đã
+            consume (200) vì OpenAI sẽ trả 401 "wrong_email_otp_code".
     """
     log(f"[browser] typing OTP {otp_code} ({_browser_health(ctx, page)})")
 
     if _safe_is_closed(page):
         log(f"[browser] page closed before OTP fill — fallback API ({_browser_health(ctx, page)})")
-        return (await _submit_otp_via_api(ctx, otp_code=otp_code, log=log), "api")
+        cu, st = await _submit_otp_via_api(ctx, otp_code=otp_code, log=log)
+        return (cu, "api", st)
 
     from _human_input import human_type, dwell
 
@@ -366,7 +372,8 @@ async def _submit_otp(ctx, page, *, otp_code: str, otp_selector: str, log) -> tu
                         f"({type(exc).__name__}: {exc}) — fallback API "
                         f"({_browser_health(ctx, page)})"
                     )
-                    return (await _submit_otp_via_api(ctx, otp_code=otp_code, log=log), "api")
+                    cu, st = await _submit_otp_via_api(ctx, otp_code=otp_code, log=log)
+                    return (cu, "api", st)
                 # Non-driver-dead: vẫn cố submit (input có thể đã có một phần)
                 log(f"[browser] human_type OTP non-fatal: {type(exc).__name__}: {exc}")
 
@@ -385,7 +392,8 @@ async def _submit_otp(ctx, page, *, otp_code: str, otp_selector: str, log) -> tu
                         f"({type(exc).__name__}: {exc}) — fallback API "
                         f"({_browser_health(ctx, page)})"
                     )
-                    return (await _submit_otp_via_api(ctx, otp_code=otp_code, log=log), "api")
+                    cu, st = await _submit_otp_via_api(ctx, otp_code=otp_code, log=log)
+                    return (cu, "api", st)
                 log(f"[browser] OTP Enter failed: {type(exc).__name__}: {exc} — thử click button")
 
             if submitted_via is None:
@@ -404,7 +412,8 @@ async def _submit_otp(ctx, page, *, otp_code: str, otp_selector: str, log) -> tu
                                 f"[browser] click {btn} — driver dead — fallback API "
                                 f"({_browser_health(ctx, page)})"
                             )
-                            return (await _submit_otp_via_api(ctx, otp_code=otp_code, log=log), "api")
+                            cu, st = await _submit_otp_via_api(ctx, otp_code=otp_code, log=log)
+                            return (cu, "api", st)
                         continue
             log(f"[browser] OTP submitted via {submitted_via or '(no UI trigger fired)'}")
 
@@ -414,24 +423,24 @@ async def _submit_otp(ctx, page, *, otp_code: str, otp_selector: str, log) -> tu
         log(f"[browser] OTP validate UI → HTTP {status}")
         if status >= 400:
             # OTP sai (incorrect/expired) — caller resend / pop pending code
-            return (None, "ui")
+            return (None, "ui", status)
         # 2xx → parse continue_url. Schema (từ HAR manual):
         #   {"continue_url": "...", "method": "GET", "page": {...}}
         try:
             body = await resp.text()
         except Exception as exc:
             log(f"[browser] OTP response body read failed: {exc}")
-            return (None, "ui")
+            return (None, "ui", status)
         if not body:
-            return (None, "ui")
+            return (None, "ui", status)
         try:
             data = json.loads(body)
         except json.JSONDecodeError:
-            return (None, "ui")
+            return (None, "ui", status)
         if not isinstance(data, dict):
-            return (None, "ui")
+            return (None, "ui", status)
         cu = (data.get("continue_url") or "").strip()
-        return (cu or None, "ui")
+        return (cu or None, "ui", status)
 
     except Exception as exc:
         # expect_response timeout (UI không trigger POST trong 12s) hoặc lỗi context.
@@ -441,26 +450,31 @@ async def _submit_otp(ctx, page, *, otp_code: str, otp_selector: str, log) -> tu
             f"[browser] OTP UI submit không trigger POST trong 12s "
             f"({type(exc).__name__}: {str(exc)[:80]}) — fallback API"
         )
-        return (await _submit_otp_via_api(ctx, otp_code=otp_code, log=log), "api")
+        cu, st = await _submit_otp_via_api(ctx, otp_code=otp_code, log=log)
+        return (cu, "api", st)
 
 
-async def _submit_otp_via_api(ctx, *, otp_code: str, log) -> str | None:
+async def _submit_otp_via_api(ctx, *, otp_code: str, log) -> tuple[str | None, int]:
     """Submit OTP qua context.request — không phụ thuộc page sống.
 
     Dùng cookies từ context (đã chia sẻ với page) để giữ session.
-    Fail-fast nếu HTTP status không OK.
+    KHÔNG raise trên 4xx (trước đây raise BrowserPhaseError che mất status
+    để caller phân biệt "code consumed" vs "code wrong"). Caller phải kiểm
+    tra status return.
 
     Returns:
-        ``continue_url`` (str) khi server trả 200 + body JSON có field này
-        (vd ``https://auth.openai.com/about-you``). Caller dùng để
-        ``page.goto(continue_url)`` cho SPA navigation thật, vì validate
-        gọi qua context.request KHÔNG trigger page navigation event.
-
-        ``None`` khi server trả 200 nhưng body không parse được hoặc thiếu
-        ``continue_url`` (rare; log warning, không raise vì validate đã pass).
+        Tuple ``(continue_url, status)``:
+          - ``continue_url`` (str) khi server trả 200 + body JSON có field
+            này (vd ``https://auth.openai.com/about-you``). Caller dùng để
+            ``page.goto(continue_url)`` cho SPA navigation thật.
+          - ``None`` khi server trả 4xx hoặc 2xx nhưng body không parse
+            được/thiếu ``continue_url``.
+          - ``status``: HTTP status thật (200, 400, 401, 500…) hoặc 0 khi
+            network fail trước khi nhận response.
 
     Raises:
-        BrowserPhaseError khi network fail hoặc HTTP ≥ 400.
+        BrowserPhaseError khi network fail (chưa biết status) hoặc
+        ``ctx.request`` không khả dụng. KHÔNG raise trên 4xx.
     """
     request_ctx = getattr(ctx, "request", None)
     if request_ctx is None:
@@ -492,9 +506,9 @@ async def _submit_otp_via_api(ctx, *, otp_code: str, log) -> str | None:
         body_text = ""
     log(f"[browser] OTP fallback API → HTTP {status} body={body_text[:120]}")
     if status >= 400:
-        raise BrowserPhaseError(
-            f"OTP validate API rejected: HTTP {status}: {body_text[:200]}"
-        )
+        # KHÔNG raise — return status để caller phân biệt 401 (wrong code)
+        # vs 200-consumed (caller cần re-poll, KHÔNG resubmit cùng code).
+        return (None, status)
 
     # Parse continue_url từ JSON body. Server trả schema (HAR manual record):
     #   {"continue_url": "https://auth.openai.com/about-you",
@@ -502,20 +516,20 @@ async def _submit_otp_via_api(ctx, *, otp_code: str, log) -> str | None:
     #    "page": {"type": "about_you", ...}}
     if not body_text:
         log("[browser] OTP fallback API: empty body, không có continue_url")
-        return None
+        return (None, status)
     try:
         data = json.loads(body_text)
     except json.JSONDecodeError:
         log("[browser] OTP fallback API: body không phải JSON, không có continue_url")
-        return None
+        return (None, status)
     if not isinstance(data, dict):
         log(f"[browser] OTP fallback API: body không phải object (got {type(data).__name__})")
-        return None
+        return (None, status)
     continue_url = (data.get("continue_url") or "").strip()
     if not continue_url:
         log("[browser] OTP fallback API: response thiếu continue_url field")
-        return None
-    return continue_url
+        return (None, status)
+    return (continue_url, status)
 
 
 async def _wait_after_login(page, *, timeout_seconds: float, log) -> str:
@@ -798,12 +812,20 @@ async def _drive_signup_flow(
     # registered nửa chừng bị stuck giữa flow).
     force_pwd_goto_count = 0
     _FORCE_PWD_GOTO_MAX = 3
+    # OTP submit state — track HTTP status thật từ _submit_otp để decision tree:
+    #   200 + continue_url → reset (page tự nav hoặc manual goto theo source)
+    #   200 + no continue_url → manual goto /about-you (server validated nhưng quên trả URL)
+    #   4xx → click Resend + re-poll code mới ngay (KHÔNG resubmit cùng code → 401)
+    _otp_last_status: int = 0
+    # Wait 10s trước poll OTP lần đầu — mail iCloud HME có delay forward 2-10s.
+    # Poll quá sớm dễ bắt code stale từ session cũ hoặc trả None gây resend sớm.
+    _otp_first_poll_wait_done: bool = False
+    # Sau submit OTP UI status 200 (code consumed) mà page kẹt — chỉ goto fallback
+    # /about-you 1 lần để tránh loop khi /about-you cũng kẹt.
+    _otp_force_about_you_done: bool = False
     otp_submitted = False
     _otp_submit_ts: float | None = None
-    _otp_reclick_done = False
-    _otp_js_submit_done = False
-    _otp_api_done = False
-    _otp_last_code: str | None = None  # code đang chờ confirm (cho API fallback)
+    _otp_last_code: str | None = None  # code đang chờ confirm (cho debug log)
     tried_codes: set[str] = set()  # codes đã submit + bị reject
     pending_codes: list[str] = []  # codes chưa submit (mail delay catch)
     last_screen = None
@@ -1176,178 +1198,146 @@ async def _drive_signup_flow(
                 )
             # ── End guard ──
 
-            # Detect "incorrect code" error → thử code kế (nếu có) hoặc resend + poll
-            # Gate bằng `otp_submitted`: chỉ check error sau khi đã submit ít nhất 1 OTP.
-            # Lý do: trang /email-verification fresh load có thể có element
-            # `[role="alert"]` hoặc class chứa "error" với text khớp keyword
-            # ("expired", "invalid"...) cho mục đích banner thông tin/validation hint
-            # → false positive trigger Resend → gửi mail OTP thứ 2 dù chưa submit code nào.
-            if otp_submitted:
+            # ── OTP submit state machine — status-driven decision tree ──
+            # Architecture (2026-06-28 refactor):
+            #   - _submit_otp trả (continue_url, source, status). Caller dùng
+            #     status để biết server trạng thái thật của code:
+            #       200 → code consumed + validated → đợi page nav HOẶC manual
+            #             goto continue_url/about-you (KHÔNG resubmit).
+            #       4xx → wrong/expired → click Resend + re-poll code mới NGAY
+            #             (KHÔNG resubmit cùng code → server trả 401).
+            #   - Bỏ escalation chain cũ (>10s re-click, >18s JS submit, >25s
+            #     API resubmit). Logic này resubmit code đã consume → 401
+            #     "wrong_email_otp_code" → confuse re-poll, lãng phí 35s.
+            #
+            # State flow:
+            #   1. otp_submitted=False → poll new code → submit → branch theo status
+            #   2. otp_submitted=True + status=200 → đợi page nav (≤15s). Nếu kẹt,
+            #      force goto /about-you 1 lần (next step trong signup flow).
+            #   3. otp_submitted=True + status≥400 → xử lý ngay đầu vòng tới
+            #      (click Resend hoặc pop pending code).
+
+            # Step A: nếu vừa submit xong với status ≥ 400 → wrong code, xử lý ngay
+            if otp_submitted and _otp_last_status >= 400:
+                log(
+                    f"[flow] OTP {_otp_last_code or '?'} rejected HTTP "
+                    f"{_otp_last_status} — click Resend + poll code mới"
+                )
+                # Clear input để gõ code mới
                 try:
-                    err_el = page.locator('[role="alert"], [class*="error"]').first
-                    err_text = await err_el.text_content(timeout=200)
-                    if err_text and any(k in err_text.lower() for k in ("incorrect", "wrong", "invalid", "expired")):
-                        # Clear input trước
-                        try:
-                            otp_inp = page.locator('input[name="code"]').first
-                            await otp_inp.fill("")
-                        except Exception:
-                            pass
-                        # Nếu còn pending code (mail delay) → thử ngay, không resend
-                        if pending_codes:
-                            next_code = pending_codes.pop(0)
-                            log(f"[flow] OTP rejected: {err_text.strip()[:60]} — thử code kế: {next_code}")
-                            otp_selector = await _wait_otp_form(page, timeout_seconds=5.0, log=log)
-                            otp_continue_url, otp_source = await _submit_otp(
-                                ctx, page, otp_code=next_code,
-                                otp_selector=otp_selector, log=log,
-                            )
-                            tried_codes.add(next_code)
-                            otp_submitted = True
-                            _otp_submit_ts = time.monotonic()
-                            _otp_last_code = next_code
-                            _otp_reclick_done = False
-                            _otp_js_submit_done = False
-                            _otp_api_done = False
-                            same_screen_count = 0
-                            # Chỉ goto khi API path (page không tự nav). UI path
-                            # → page tự nav, goto sẽ gây NS_BINDING_ABORTED.
-                            if otp_continue_url and otp_source == "api":
-                                log(f"[flow] OTP OK (pending, API path) → goto {otp_continue_url}")
-                                try:
-                                    await page.goto(
-                                        otp_continue_url,
-                                        wait_until="domcontentloaded",
-                                        timeout=15000,
-                                    )
-                                except Exception as exc:
-                                    log(f"[flow] goto continue_url failed: {type(exc).__name__}: {exc}")
-                                otp_submitted = False
-                                _otp_submit_ts = None
-                                _otp_last_code = None
-                            elif otp_continue_url and otp_source == "ui":
-                                log(
-                                    f"[flow] OTP OK (pending, UI path) — page sẽ "
-                                    f"tự nav, KHÔNG goto. State machine detect screen mới."
-                                )
-                                otp_submitted = False
-                                _otp_submit_ts = None
-                                _otp_last_code = None
-                            await asyncio.sleep(2.0)
-                            continue
-                        # Không còn pending → resend
-                        log(f"[flow] OTP rejected: {err_text.strip()[:80]} — resend email & poll lại")
-                        try:
-                            resend_btn = page.locator('button:has-text("Resend"), a:has-text("Resend")').first
-                            await resend_btn.click(timeout=3000)
-                            log("[flow] clicked 'Resend email'")
-                        except Exception as exc:
-                            log(f"[flow] resend button not found: {exc}")
-                        # Reset state để poll code mới
-                        otp_submitted = False
-                        _otp_submit_ts = None
-                        same_screen_count = 0
-                        await asyncio.sleep(2.0)
+                    otp_inp = page.locator('input[name="code"]').first
+                    await otp_inp.fill("")
                 except Exception:
                     pass
+                # Nếu còn pending code → thử ngay, không cần resend
+                if pending_codes:
+                    log(f"[flow] còn {len(pending_codes)} pending code(s) — thử code kế trước khi resend")
+                else:
+                    # Click Resend để server gửi mail OTP mới
+                    try:
+                        resend_btn = page.locator(
+                            'button:has-text("Resend"), a:has-text("Resend")'
+                        ).first
+                        await resend_btn.click(timeout=3000)
+                        log("[flow] clicked 'Resend email' (sau wrong code)")
+                    except Exception as exc:
+                        log(f"[flow] resend button not found: {type(exc).__name__}: {exc}")
+                # Reset state để vòng tới re-poll
+                otp_submitted = False
+                _otp_submit_ts = None
+                _otp_last_status = 0
+                same_screen_count = 0
+                await asyncio.sleep(2.0)
+                continue
 
+            # Step B: nếu đã submit + status=200 → đợi page nav HOẶC force goto fallback
             if otp_submitted:
-                # Đã submit rồi, đợi page chuyển.
-                # Dùng wall-clock time (không phải counter) vì mỗi iteration ~1-2s.
+                # status=200 (hoặc 0 = chưa observe response): page đang nav hoặc kẹt
                 if _otp_submit_ts is None:
                     _otp_submit_ts = time.monotonic()
                 _otp_wait_elapsed = time.monotonic() - _otp_submit_ts
 
-                if _otp_wait_elapsed > 10.0 and not _otp_reclick_done:
-                    log(f"[flow] OTP screen vẫn ở đây sau {_otp_wait_elapsed:.0f}s — thử click submit lại (url={page.url})")
-                    for btn in ('button[type="submit"]', 'button:has-text("Continue")', 'button:has-text("Verify")'):
-                        try:
-                            await page.click(btn, timeout=2000)
-                            break
-                        except Exception:
-                            continue
-                    _otp_reclick_done = True
-                elif _otp_wait_elapsed > 18.0 and not _otp_js_submit_done:
-                    log("[flow] OTP UI click không work — thử form.submit() qua JS")
+                # 15s không nav → force goto /about-you (next step sau OTP trong
+                # signup flow). KHÔNG resubmit code (đã consume). Chỉ thử 1 lần
+                # để tránh loop khi /about-you cũng kẹt.
+                if _otp_wait_elapsed > 15.0 and not _otp_force_about_you_done:
+                    _otp_force_about_you_done = True
+                    log(
+                        f"[flow] OTP submitted (status={_otp_last_status}) nhưng "
+                        f"page kẹt {_otp_wait_elapsed:.0f}s ở {page.url.split('?')[0]} — "
+                        f"force goto /about-you (code đã consume, KHÔNG resubmit)"
+                    )
                     try:
-                        await page.evaluate("""() => {
-                            const form = document.querySelector('form');
-                            if (form) form.submit();
-                        }""")
-                    except Exception as exc:
-                        log(f"[flow] JS form.submit() failed: {type(exc).__name__}: {exc}")
-                    _otp_js_submit_done = True
-                elif _otp_wait_elapsed > 25.0 and not _otp_api_done:
-                    log("[flow] OTP UI+JS submit không work — thử validate qua API")
-                    # Ưu tiên `_otp_last_code` đã track lúc submit (chính xác,
-                    # không phụ thuộc state input box còn giữ giá trị hay không).
-                    # Fallback: đọc từ input box nếu vì lý do nào đó chưa track.
-                    code_to_send = _otp_last_code
-                    if not code_to_send:
-                        try:
-                            otp_inp = page.locator('input[name="code"]').first
-                            otp_val = await otp_inp.input_value()
-                            if otp_val and len(otp_val) == 6:
-                                code_to_send = otp_val
-                        except Exception:
-                            pass
-                    if not code_to_send:
-                        log("[flow] API fallback skip: không có OTP code để gửi")
-                        _otp_api_done = True
-                        await asyncio.sleep(0.5)
-                        continue
-                    try:
-                        continue_url = await _submit_otp_via_api(
-                            ctx, otp_code=code_to_send, log=log
+                        await page.goto(
+                            "https://auth.openai.com/about-you",
+                            wait_until="domcontentloaded",
+                            timeout=15000,
                         )
-                    except Exception as exc:
-                        log(f"[flow] API fallback failed: {type(exc).__name__}: {exc}")
-                        continue_url = None
-                    _otp_api_done = True
-                    # API validate đã pass nhưng SPA của page KHÔNG nhận
-                    # navigation event (vì gọi qua context.request, không qua
-                    # form submit của page). Phải manual goto continue_url
-                    # để page chuyển sang /about-you, nếu không state machine
-                    # sẽ kẹt vô tận ở screen=otp.
-                    if continue_url:
-                        log(f"[flow] follow continue_url → {continue_url}")
-                        try:
-                            await page.goto(continue_url, wait_until="domcontentloaded", timeout=15000)
-                        except Exception as exc:
-                            log(f"[flow] goto continue_url failed: {type(exc).__name__}: {exc}")
-                        # Reset state OTP để state machine detect screen mới
-                        # (kỳ vọng `about_you`). Nếu page vẫn còn ở
-                        # /email-verification thì sẽ vào nhánh re-poll bên dưới.
+                        await asyncio.sleep(1.0)
+                        # Reset state để state machine detect screen mới
                         otp_submitted = False
                         _otp_submit_ts = None
-                        _otp_reclick_done = False
-                        _otp_js_submit_done = False
-                        _otp_api_done = False
                         _otp_last_code = None
+                        _otp_last_status = 0
+                        last_screen = None
                         same_screen_count = 0
-                        await asyncio.sleep(0.5)
-                        continue
-                elif _otp_wait_elapsed > 35.0:
-                    log("[flow] OTP stuck >35s — re-poll code mới")
-                    otp_submitted = False
-                    _otp_submit_ts = None
-                    _otp_reclick_done = False
-                    _otp_js_submit_done = False
-                    _otp_api_done = False
-                    _otp_last_code = None
+                    except Exception as exc:
+                        log(
+                            f"[flow] goto /about-you failed: "
+                            f"{type(exc).__name__}: {exc}"
+                        )
+                    continue
+
+                # 30s vẫn kẹt sau force goto → re-poll code mới (server có thể
+                # đã invalidate state, cần code mới hoàn toàn).
+                if _otp_wait_elapsed > 30.0:
+                    log(
+                        f"[flow] OTP kẹt >{_otp_wait_elapsed:.0f}s sau force goto — "
+                        f"re-poll code mới (click Resend)"
+                    )
+                    try:
+                        resend_btn = page.locator(
+                            'button:has-text("Resend"), a:has-text("Resend")'
+                        ).first
+                        await resend_btn.click(timeout=3000)
+                        log("[flow] clicked 'Resend email' (sau stuck timeout)")
+                    except Exception as exc:
+                        log(f"[flow] resend button not found: {type(exc).__name__}: {exc}")
+                    # Clear input + reset state
                     try:
                         otp_inp = page.locator('input[name="code"]').first
                         await otp_inp.fill("")
                     except Exception:
                         pass
+                    otp_submitted = False
+                    _otp_submit_ts = None
+                    _otp_last_code = None
+                    _otp_last_status = 0
+                    _otp_force_about_you_done = False
+                    same_screen_count = 0
+                    await asyncio.sleep(2.0)
+                    continue
+
+                # Chưa tới mốc — chỉ đợi page nav natively
                 await asyncio.sleep(0.5)
                 continue
+
+            # Step C: chưa submit → poll OTP + submit
             # Đợi OTP input fully ready
             try:
                 otp_selector = await _wait_otp_form(page, timeout_seconds=10.0, log=log)
             except BrowserPhaseError:
                 await asyncio.sleep(0.5)
                 continue
+
+            # Wait 10s trước poll lần đầu — mail iCloud HME forward delay 2-10s.
+            # Poll ngay sau register POST sẽ trả None (chưa có mail) → trigger
+            # resend sớm + lãng phí 60s mini_timeout. Chỉ chạy 1 lần / session.
+            if not _otp_first_poll_wait_done:
+                _otp_first_poll_wait_done = True
+                log("[flow] đợi 10s cho mail OTP về trước khi poll lần đầu...")
+                await asyncio.sleep(10.0)
+
             await asyncio.sleep(1.0)
             # Reset timestamp khi sắp poll — bỏ qua code cũ trước thời điểm này
             poll_started = datetime.now(timezone.utc).replace(microsecond=0)
@@ -1451,23 +1441,24 @@ async def _drive_signup_flow(
                 except Exception:
                     pass
             tried_codes.add(otp_code)
-            otp_continue_url, otp_source = await _submit_otp(
+            otp_continue_url, otp_source, otp_status = await _submit_otp(
                 ctx, page, otp_code=otp_code, otp_selector=otp_selector, log=log,
             )
             otp_submitted = True
             _otp_submit_ts = time.monotonic()
             _otp_last_code = otp_code
-            _otp_reclick_done = False
-            _otp_js_submit_done = False
-            _otp_api_done = False
+            _otp_last_status = otp_status
+            _otp_force_about_you_done = False
             otp_already_polled = True
 
-            # Phase fix 2026-06-26: chỉ goto continue_url khi API path
-            # (page KHÔNG tự nav). UI path → page tự nav natively, goto
-            # đua với natural nav → NS_BINDING_ABORTED → cả 2 navigation
-            # bị huỷ → page stuck. Để state machine detect screen mới
-            # tự nhiên.
-            if otp_continue_url and otp_source == "api":
+            # ── Status-driven branching ──────────────────────────────
+            # 200 + continue_url + source="api": page KHÔNG biết nav, manual goto
+            # 200 + continue_url + source="ui":  page tự nav, KHÔNG goto (race)
+            # 200 + no continue_url:             server validated OK nhưng quên trả
+            #                                    URL — fallback manual goto /about-you
+            # 4xx (wrong/expired):               vòng lặp tiếp sẽ xử lý (Step A)
+            #                                    → click Resend + re-poll
+            if otp_status == 200 and otp_continue_url and otp_source == "api":
                 log(f"[flow] OTP OK (API fallback path) → goto {otp_continue_url}")
                 try:
                     await page.goto(
@@ -1480,8 +1471,9 @@ async def _drive_signup_flow(
                 otp_submitted = False
                 _otp_submit_ts = None
                 _otp_last_code = None
+                _otp_last_status = 0
                 same_screen_count = 0
-            elif otp_continue_url and otp_source == "ui":
+            elif otp_status == 200 and otp_continue_url and otp_source == "ui":
                 log(
                     f"[flow] OTP OK (UI form path) — page tự nav tới "
                     f"{otp_continue_url.split('?')[0]}, KHÔNG goto manual"
@@ -1491,7 +1483,30 @@ async def _drive_signup_flow(
                 otp_submitted = False
                 _otp_submit_ts = None
                 _otp_last_code = None
+                _otp_last_status = 0
                 same_screen_count = 0
+            elif otp_status == 200 and not otp_continue_url:
+                # Server validated 200 nhưng body thiếu continue_url — rare.
+                # Code đã consume, KHÔNG resubmit. Fallback goto /about-you.
+                log(
+                    f"[flow] OTP validated HTTP 200 nhưng body thiếu continue_url — "
+                    f"fallback goto /about-you"
+                )
+                try:
+                    await page.goto(
+                        "https://auth.openai.com/about-you",
+                        wait_until="domcontentloaded",
+                        timeout=15000,
+                    )
+                except Exception as exc:
+                    log(f"[flow] goto /about-you failed: {type(exc).__name__}: {exc}")
+                otp_submitted = False
+                _otp_submit_ts = None
+                _otp_last_code = None
+                _otp_last_status = 0
+                same_screen_count = 0
+            # status >= 400 hoặc 0 (no response observed): để vòng lặp tới (Step A/B)
+            # xử lý — Step A handle 4xx, Step B handle 200 đang chờ nav.
 
             # Dwell jitter (anti-ban Task 2.3) sau submit OTP — page transition
             # tới /about-you cần realistic delay (sentinel observer record).
@@ -1569,9 +1584,14 @@ async def _handle_login_after_password(
     )
     otp_seconds = time.monotonic() - t_otp
     log(f"[browser] login OTP={otp_code} in {otp_seconds:.1f}s")
-    otp_continue_url, otp_source = await _submit_otp(
+    otp_continue_url, otp_source, otp_status = await _submit_otp(
         ctx, page, otp_code=otp_code, otp_selector=otp_selector, log=log,
     )
+    if otp_status >= 400:
+        raise BrowserPhaseError(
+            f"login OTP rejected HTTP {otp_status} — account combo có thể đã đổi "
+            f"password/2FA hoặc OTP expired. URL: {page.url}"
+        )
     # Chỉ goto khi API fallback path. UI path → page tự nav.
     if otp_continue_url and otp_source == "api":
         log(f"[browser] login OTP OK (API path) → goto {otp_continue_url}")
@@ -1681,7 +1701,24 @@ async def _wait_after_otp(page, *, ctx, timeout_seconds: float, log) -> str:
                 otp_input = page.locator('input[name="code"]').first
                 otp_val = await otp_input.input_value()
                 if otp_val and len(otp_val) == 6:
-                    await _submit_otp_via_api(ctx, otp_code=otp_val, log=log)
+                    api_cu, api_status = await _submit_otp_via_api(
+                        ctx, otp_code=otp_val, log=log
+                    )
+                    if api_status >= 400:
+                        # Code đã consume từ submit UI trước đó → resubmit luôn
+                        # trả 401. Bail-out để caller fail rõ ràng thay vì
+                        # continue loop chờ vô ích.
+                        log(
+                            f"[browser] API fallback HTTP {api_status} — code "
+                            f"đã consume (UI submit trước có thể đã 200 nhưng "
+                            f"page kẹt). KHÔNG resubmit cùng code."
+                        )
+                    elif api_cu:
+                        log(f"[browser] API fallback OK → goto {api_cu}")
+                        try:
+                            await page.goto(api_cu, wait_until="domcontentloaded", timeout=15000)
+                        except Exception as exc:
+                            log(f"[browser] goto api_cu failed: {type(exc).__name__}: {exc}")
             except Exception as exc:
                 log(f"[browser] API fallback failed: {type(exc).__name__}: {exc}")
             _api_done = True
