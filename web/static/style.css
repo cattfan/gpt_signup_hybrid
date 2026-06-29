@@ -140,6 +140,137 @@ body {
   height: 12px;
 }
 
+/* ─────────────────────────────────────────────────────────────────────
+ * Card-head Telegram contact badge (inline inside section headers)
+ * ───────────────────────────────────────────────────────────────────── */
+.card-head-tg {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: rgba(34, 158, 217, 0.10);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  text-decoration: none;
+  border: 1px solid rgba(34, 158, 217, 0.20);
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+  white-space: nowrap;
+  letter-spacing: 0.01em;
+}
+
+.card-head-tg:hover,
+.card-head-tg:focus-visible {
+  background: rgba(34, 158, 217, 0.22);
+  border-color: rgba(34, 158, 217, 0.45);
+  transform: translateY(-1px);
+  outline: none;
+}
+
+.card-head-tg svg {
+  width: 11px;
+  height: 11px;
+}
+
+/* ─────────────────────────────────────────────────────────────────────
+ * Floating Telegram FAB — fixed bottom-right, visible across all tabs
+ * ───────────────────────────────────────────────────────────────────── */
+.telegram-fab {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 9000;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #229ED9 0%, #1B7FAF 100%);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  text-decoration: none;
+  box-shadow: 0 8px 22px rgba(34, 158, 217, 0.45),
+              0 2px 6px rgba(0, 0, 0, 0.18);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  letter-spacing: 0.01em;
+}
+
+.telegram-fab::before {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, rgba(34, 158, 217, 0.45), rgba(34, 158, 217, 0));
+  z-index: -1;
+  filter: blur(8px);
+  opacity: 0.7;
+  transition: opacity 0.2s ease;
+}
+
+.telegram-fab:hover,
+.telegram-fab:focus-visible {
+  transform: translateY(-2px) scale(1.03);
+  box-shadow: 0 12px 30px rgba(34, 158, 217, 0.6),
+              0 3px 8px rgba(0, 0, 0, 0.22);
+  outline: none;
+}
+
+.telegram-fab:hover::before,
+.telegram-fab:focus-visible::before {
+  opacity: 1;
+}
+
+.telegram-fab svg {
+  width: 18px;
+  height: 18px;
+}
+
+.telegram-fab-label {
+  white-space: nowrap;
+}
+
+/* Tablet: shrink */
+@media (max-width: 1024px) {
+  .telegram-fab {
+    right: 14px;
+    bottom: 14px;
+    padding: 9px 13px;
+    font-size: 12px;
+  }
+  .telegram-fab svg {
+    width: 16px;
+    height: 16px;
+  }
+}
+
+/* Phone: icon-only round button */
+@media (max-width: 600px) {
+  .telegram-fab {
+    padding: 0;
+    width: 46px;
+    height: 46px;
+    justify-content: center;
+    gap: 0;
+  }
+  .telegram-fab-label {
+    display: none;
+  }
+}
+
+/* Hide card-head-tg label on narrow header */
+@media (max-width: 700px) {
+  .card-head-tg span {
+    display: none;
+  }
+  .card-head-tg {
+    padding: 3px 7px;
+  }
+}
+
 .topbar-actions {
   display: flex;
   align-items: center;
