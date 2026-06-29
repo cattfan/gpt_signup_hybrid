@@ -11,7 +11,7 @@
 [![Python 3.13](https://img.shields.io/badge/python-3.13-blue.svg)](https://www.python.org/)
 [![Rust 1.78+](https://img.shields.io/badge/rust-1.78%2B-orange.svg?logo=rust)](https://www.rust-lang.org/)
 [![Docker Ready](https://img.shields.io/badge/docker-ready-2496ED.svg?logo=docker)](https://www.docker.com/)
-[![Version](https://img.shields.io/badge/version-3.5.0-green.svg)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-3.6.0-green.svg)](./CHANGELOG.md)
 
 </div>
 

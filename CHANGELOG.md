@@ -2,6 +2,39 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), [SemVer](https://semver.org/).
 
+## [3.6.0] — 2026-06-29
+
+### Added — Help modal + Telegram contact saturation + multi-language docs
+
+#### Help & Guide modal (UI)
+- New **Help** button in topbar opens a self-contained modal (`#help-modal`) with friendly English guide.
+- Sections: Welcome, Quick Start (3 steps), Tab Guide, Mail Modes, Reg Modes, Settings (Proxies/Telegram/Tunnel), UPI flow walkthrough, Troubleshooting (captcha/409/blocked/OTP/401), Contact card.
+- Modal reuses `.modal`/`.modal-content` pattern, scrollable body, 820px max width, 90vh height, Escape/overlay/close-button dismiss, focus restore.
+- Inline IIFE handles open/close, prevents body scroll while open.
+- Responsive: full-screen on mobile, label-only icon on narrow header.
+
+#### Telegram contact saturation (UI)
+- New `.brand-telegram` pill next to "Batch signup + 2FA" in topbar — gradient + hover lift, auto-collapses on mobile.
+- New `.card-head-tg` inline badge in card heads of **Reg → Input Combos**, **Get Session → Input**, **UPI QR → Input** — paper-plane icon + @prr9293, hides label <700px.
+- New floating **`.telegram-fab`** (bottom-right, z=9000) — always-visible Telegram contact button across every tab/scroll position, gradient + glow, collapses to icon-only ≤600px.
+- Browser tab title now reads `GSH Tool · @prr9293 (Telegram)`.
+- Session and UPI textarea placeholders prepended with `💬 Need iCloud mail / support? Contact @prr9293 on Telegram`.
+- iCloud v3 + iCloud Worker mail mode placeholders + help text rewritten in English: `Contact @prr9293 on Telegram (https://t.me/prr9293) to buy iCloud mail`.
+- Settings → Telegram section gains a contact hint linking `@prr9293` and the community group.
+
+#### Multi-language READMEs
+- `README.md` (root) replaced with a short index page: donation block, language picker, sub-system list, TL;DR one-line Docker bootstrap.
+- New per-language files: `README.vi.md` (Vietnamese), `README.en.md` (English), `README.zh.md` (Chinese), `README.id.md` (Indonesian), `README.hi.md` (Hindi).
+- Each language README contains full guide: detailed UPI feature explanation (Python `pay_upi_http.py` + Rust `rust_upi_bot/`), Docker step-by-step, VPN/VPS for JP/VN ChatGPT Plus discount, manual install, troubleshooting, project structure.
+- Prominent "READ FIRST" notice on top of every language README: login proxy MUST exit VN/JP, otherwise install JP/VN VPN on the host running the tool, with beginner tip (Vultr Tokyo VPS / ProtonVPN free Japan node).
+- New `rust_upi_bot/README.md` — dedicated sub-system README with 5 language sections, architecture diagram, OpenWrt aarch64 cross-compile instructions, Telegram command list.
+
+### Changed
+- Donation block (Binance ID, BEP20, TRC20, Telegram DM + group) elevated to the top of the root README.
+
+### Test
+- No new tests in this release — UI-only and documentation changes.
+
 ## [3.5.0] — 2026-06-27
 
 ### Added — Hybrid registration pipeline + Camoufox relay (Phase 10-11)
