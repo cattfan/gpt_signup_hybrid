@@ -112,6 +112,417 @@ body {
   border-left: 1px solid var(--border);
 }
 
+.brand-telegram {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, rgba(34, 158, 217, 0.20), rgba(34, 158, 217, 0.07));
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: none;
+  border: 1px solid rgba(34, 158, 217, 0.25);
+  transition: background 0.15s ease, transform 0.15s ease, border-color 0.15s ease;
+}
+
+.brand-telegram:hover,
+.brand-telegram:focus-visible {
+  background: linear-gradient(135deg, rgba(34, 158, 217, 0.32), rgba(34, 158, 217, 0.14));
+  border-color: rgba(34, 158, 217, 0.45);
+  transform: translateY(-1px);
+  outline: none;
+}
+
+.brand-telegram svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* ─────────────────────────────────────────────────────────────────────
+ * Card-head Telegram contact badge (inline inside section headers)
+ * ───────────────────────────────────────────────────────────────────── */
+.card-head-tg {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: rgba(34, 158, 217, 0.10);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  text-decoration: none;
+  border: 1px solid rgba(34, 158, 217, 0.20);
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+  white-space: nowrap;
+  letter-spacing: 0.01em;
+}
+
+.card-head-tg:hover,
+.card-head-tg:focus-visible {
+  background: rgba(34, 158, 217, 0.22);
+  border-color: rgba(34, 158, 217, 0.45);
+  transform: translateY(-1px);
+  outline: none;
+}
+
+.card-head-tg svg {
+  width: 11px;
+  height: 11px;
+}
+
+/* ─────────────────────────────────────────────────────────────────────
+ * Floating Telegram FAB — fixed bottom-right, visible across all tabs
+ * ───────────────────────────────────────────────────────────────────── */
+.telegram-fab {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 9000;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #229ED9 0%, #1B7FAF 100%);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  text-decoration: none;
+  box-shadow: 0 8px 22px rgba(34, 158, 217, 0.45),
+              0 2px 6px rgba(0, 0, 0, 0.18);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  letter-spacing: 0.01em;
+}
+
+.telegram-fab::before {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, rgba(34, 158, 217, 0.45), rgba(34, 158, 217, 0));
+  z-index: -1;
+  filter: blur(8px);
+  opacity: 0.7;
+  transition: opacity 0.2s ease;
+}
+
+.telegram-fab:hover,
+.telegram-fab:focus-visible {
+  transform: translateY(-2px) scale(1.03);
+  box-shadow: 0 12px 30px rgba(34, 158, 217, 0.6),
+              0 3px 8px rgba(0, 0, 0, 0.22);
+  outline: none;
+}
+
+.telegram-fab:hover::before,
+.telegram-fab:focus-visible::before {
+  opacity: 1;
+}
+
+.telegram-fab svg {
+  width: 18px;
+  height: 18px;
+}
+
+.telegram-fab-label {
+  white-space: nowrap;
+}
+
+/* Tablet: shrink */
+@media (max-width: 1024px) {
+  .telegram-fab {
+    right: 14px;
+    bottom: 14px;
+    padding: 9px 13px;
+    font-size: 12px;
+  }
+  .telegram-fab svg {
+    width: 16px;
+    height: 16px;
+  }
+}
+
+/* Phone: icon-only round button */
+@media (max-width: 600px) {
+  .telegram-fab {
+    padding: 0;
+    width: 46px;
+    height: 46px;
+    justify-content: center;
+    gap: 0;
+  }
+  .telegram-fab-label {
+    display: none;
+  }
+}
+
+/* Hide card-head-tg label on narrow header */
+@media (max-width: 700px) {
+  .card-head-tg span {
+    display: none;
+  }
+  .card-head-tg {
+    padding: 3px 7px;
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────────
+ * Help button in topbar — opens the Help & Guide modal
+ * ───────────────────────────────────────────────────────────────────── */
+.btn-help {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--control-h, 32px);
+  padding: 0 12px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.btn-help:hover,
+.btn-help:focus-visible {
+  background: rgba(34, 158, 217, 0.12);
+  border-color: rgba(34, 158, 217, 0.45);
+  color: var(--accent);
+  outline: none;
+}
+
+.btn-help svg {
+  width: 15px;
+  height: 15px;
+}
+
+@media (max-width: 700px) {
+  .btn-help span {
+    display: none;
+  }
+  .btn-help {
+    padding: 0 8px;
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────────
+ * Help & Guide modal — reuses .modal/.modal-content/.modal-head pattern
+ * with larger shell and scrollable body
+ * ───────────────────────────────────────────────────────────────────── */
+.help-modal[hidden] {
+  display: none !important;
+}
+
+.help-modal-content {
+  width: min(820px, 96vw);
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5),
+              0 4px 14px rgba(0, 0, 0, 0.3);
+}
+
+.help-modal-head h3 {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 14px;
+}
+
+.modal-close-btn {
+  background: transparent;
+  border: none;
+  color: var(--fg-mute);
+  font-size: 18px;
+  line-height: 1;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.modal-close-btn:hover,
+.modal-close-btn:focus-visible {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--fg);
+  outline: none;
+}
+
+.help-modal-body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 18px 22px;
+  display: block;
+  gap: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--fg);
+  scrollbar-gutter: stable;
+}
+
+.help-section {
+  margin: 0 0 22px 0;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.help-section:last-child {
+  border-bottom: none;
+  margin-bottom: 0;
+}
+
+.help-section h4 {
+  margin: 0 0 10px 0;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent);
+  letter-spacing: 0.01em;
+}
+
+.help-section p {
+  margin: 0 0 10px 0;
+  color: var(--fg);
+}
+
+.help-section p:last-child {
+  margin-bottom: 0;
+}
+
+.help-section a {
+  color: var(--accent);
+  text-decoration: none;
+  border-bottom: 1px dashed rgba(34, 158, 217, 0.45);
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.help-section a:hover,
+.help-section a:focus-visible {
+  color: #fff;
+  border-bottom-color: var(--accent);
+  outline: none;
+}
+
+.help-section code {
+  background: rgba(255, 255, 255, 0.06);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--accent);
+}
+
+.help-list,
+.help-list-compact {
+  margin: 0 0 6px 0;
+  padding-left: 22px;
+  color: var(--fg);
+}
+
+.help-list li,
+.help-list-compact li {
+  margin: 4px 0;
+}
+
+.help-list-compact {
+  list-style: none;
+  padding-left: 4px;
+}
+
+.help-list-compact li::before {
+  content: "›";
+  color: var(--accent);
+  font-weight: 700;
+  margin-right: 8px;
+}
+
+.help-dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 8px 14px;
+  align-items: baseline;
+}
+
+.help-dl dt {
+  font-weight: 700;
+  color: var(--fg);
+  white-space: nowrap;
+}
+
+.help-dl dd {
+  margin: 0;
+  color: var(--fg-mute);
+}
+
+.help-badge {
+  display: inline-block;
+  background: rgba(34, 158, 217, 0.18);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 7px;
+  border-radius: 999px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+.help-tip {
+  background: rgba(34, 158, 217, 0.08);
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  padding: 8px 12px;
+  margin-top: 10px !important;
+  font-size: 12px;
+  color: var(--fg);
+}
+
+.help-section-contact {
+  background: linear-gradient(135deg, rgba(34, 158, 217, 0.10), rgba(34, 158, 217, 0.03));
+  border: 1px solid rgba(34, 158, 217, 0.25);
+  border-radius: 8px;
+  padding: 14px 16px;
+  margin-bottom: 0 !important;
+}
+
+.help-modal-foot {
+  border-top: 1px solid var(--border);
+  background: linear-gradient(180deg, transparent, rgba(255,255,255,0.02));
+}
+
+/* Prevent background scroll when help modal is open */
+body.help-modal-open {
+  overflow: hidden;
+}
+
+/* Mobile: stack footer buttons, simplify */
+@media (max-width: 600px) {
+  .help-modal-content {
+    width: 100vw;
+    height: 100vh;
+    max-height: 100vh;
+    border-radius: 0;
+  }
+  .help-dl {
+    grid-template-columns: 1fr;
+    gap: 2px 0;
+  }
+  .help-dl dt {
+    margin-top: 8px;
+  }
+}
+
 .topbar-actions {
   display: flex;
   align-items: center;
@@ -316,6 +727,12 @@ body {
   }
   .brand-tag {
     display: none;
+  }
+  .brand-telegram span {
+    display: none;
+  }
+  .brand-telegram {
+    padding: 3px 6px;
   }
   .combo-textarea {
     min-height: 0;

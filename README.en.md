@@ -18,6 +18,27 @@
 
 ---
 
+## ⚠️ READ FIRST — IMPORTANT NOTICE
+
+> 🎯 **To get ChatGPT Plus discounted pricing (PPP 40-60% off), your login proxy MUST exit from Vietnam (VN) or Japan (JP).**
+>
+> **If you DO NOT have a VN/JP proxy for login**, you can still use the tool — just use a VPN instead:
+>
+> - ✅ **Install a VPN with a VN or JP server** on the device running this tool (laptop / VPS / server)
+> - ✅ Once the VPN is active → leave the login proxy field **empty** in UI/CLI; the tool will route via your VPN's exit IP
+> - ✅ Recommended VPN options:
+>   - 🛠️ Self-hosted **WireGuard / OpenVPN** on a JP/VN VPS (cheapest and most reliable)
+>   - 💼 Commercial VPN with JP/VN nodes — Mullvad, ProtonVPN, NordVPN, Surfshark, ExpressVPN
+>   - 🏠 Residential proxies (Bright Data, Soax, NetNut) for production scale
+>
+> ⛔ Running from a US/EU IP **without** a JP/VN VPN → Plus price is 2-3× higher, or UPI/GoPay geo-blocked.
+>
+> 💡 **Beginner recommendation**:
+> 1. Rent a Japan VPS (Vultr Tokyo ~$5/month) → run the tool directly there, NO proxy/VPN needed
+> 2. Or use ProtonVPN free tier (includes a free Japan node) on your personal laptop for testing
+
+---
+
 ## 📖 Introduction
 
 `gpt_signup_hybrid` is an automated ChatGPT signup pipeline with a local web UI, paired with a Rust-based UPI payment bot.

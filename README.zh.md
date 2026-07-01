@@ -18,6 +18,27 @@
 
 ---
 
+## ⚠️ 必读 — 重要提示
+
+> 🎯 **想要 ChatGPT Plus 优惠价（PPP 便宜 40-60%），登录代理必须出口在越南 (VN) 或日本 (JP)。**
+>
+> **如果你没有 VN/JP 登录代理**，也可以用 VPN 代替：
+>
+> - ✅ 在运行 tool 的设备（笔记本 / VPS / 服务器）上**安装带 VN 或 JP 服务器的 VPN**
+> - ✅ VPN 启动后 → UI/CLI 里的登录代理字段**留空**，tool 会自动走 VPN 的出口 IP
+> - ✅ 推荐 VPN 方案：
+>   - 🛠️ 在 JP/VN VPS 上自建 **WireGuard / OpenVPN**（最便宜、最稳定）
+>   - 💼 商用 VPN 含 JP/VN 节点 — Mullvad、ProtonVPN、NordVPN、Surfshark、ExpressVPN
+>   - 🏠 住宅代理（Bright Data、Soax、NetNut）适合生产规模
+>
+> ⛔ 用美/欧 IP **没有** JP/VN VPN → Plus 价格贵 2-3 倍，UPI/GoPay 还会被地理屏蔽。
+>
+> 💡 **新手建议**：
+> 1. 租日本 VPS（Vultr 东京约 5 美元/月）→ 直接在 VPS 上跑，不需要代理/VPN
+> 2. 或在个人笔记本用 ProtonVPN 免费版（含免费日本节点）做测试
+
+---
+
 ## 📖 项目介绍
 
 `gpt_signup_hybrid` 是一个带本地 Web UI 的 ChatGPT 账号自动注册流水线，配套有 Rust 编写的 UPI 支付机器人。

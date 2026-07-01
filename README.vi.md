@@ -18,6 +18,27 @@
 
 ---
 
+## ⚠️ ĐỌC TRƯỚC — CHÚ Ý QUAN TRỌNG
+
+> 🎯 **Để nhận ưu đãi giá ChatGPT Plus (PPP rẻ hơn 40-60%), proxy login BẮT BUỘC phải ra IP Việt Nam (VN) hoặc Nhật Bản (JP).**
+>
+> **Nếu bạn KHÔNG có proxy VN/JP cho proxy login**, bạn vẫn có thể dùng tool — chỉ cần dùng VPN thay thế:
+>
+> - ✅ **Cài VPN có server VN hoặc Japan** ngay trên thiết bị chạy tool (laptop / VPS / server)
+> - ✅ Khi VPN đã active → để trống ô proxy login trong UI/CLI, tool sẽ tự dùng IP từ VPN
+> - ✅ Các loại VPN gợi ý:
+>   - 🛠️ Tự dựng **WireGuard / OpenVPN** trên VPS Nhật/Việt Nam (rẻ và an toàn nhất)
+>   - 💼 VPN thương mại có node JP/VN — Mullvad, ProtonVPN, NordVPN, Surfshark, ExpressVPN
+>   - 🏠 Residential proxy (Bright Data, Soax, NetNut) cho production scale
+>
+> ⛔ Chạy ở IP US/EU **mà không có** VPN JP/VN → giá Plus đắt gấp 2-3 lần, hoặc bị geo-block UPI/GoPay.
+>
+> 💡 **Khuyên dùng cho người mới**:
+> 1. Thuê VPS Nhật Bản (Vultr Tokyo ~5$/tháng) → chạy thẳng trên VPS, KHÔNG cần proxy/VPN
+> 2. Hoặc dùng ProtonVPN free tier (có node Japan miễn phí) trên laptop cá nhân để test
+
+---
+
 ## 📖 Giới thiệu
 
 `gpt_signup_hybrid` là pipeline tự động đăng ký tài khoản ChatGPT có giao diện web local, đi kèm UPI payment bot viết bằng Rust.

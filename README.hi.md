@@ -18,6 +18,27 @@
 
 ---
 
+## ⚠️ पहले पढ़ें — महत्वपूर्ण सूचना
+
+> 🎯 **ChatGPT Plus की discounted pricing (PPP 40-60% off) पाने के लिए, आपका login proxy Vietnam (VN) या Japan (JP) से exit करना ज़रूरी है।**
+>
+> **अगर आपके पास login के लिए VN/JP proxy नहीं है**, तो भी आप tool use कर सकते हैं — बस VPN use करें:
+>
+> - ✅ Tool चलाने वाले device (laptop / VPS / server) पर **VN या JP server वाला VPN install करें**
+> - ✅ VPN active होने पर → UI/CLI में login proxy field **खाली** छोड़ दें; tool VPN के exit IP से route करेगा
+> - ✅ Recommended VPN options:
+>   - 🛠️ JP/VN VPS पर self-host **WireGuard / OpenVPN** (सबसे सस्ता और reliable)
+>   - 💼 JP/VN nodes वाले commercial VPN — Mullvad, ProtonVPN, NordVPN, Surfshark, ExpressVPN
+>   - 🏠 Production scale के लिए residential proxies (Bright Data, Soax, NetNut)
+>
+> ⛔ US/EU IP से **बिना** JP/VN VPN के run करना → Plus price 2-3× ज़्यादा, या UPI/GoPay geo-blocked।
+>
+> 💡 **शुरुआती लोगों के लिए recommendation**:
+> 1. Japan VPS rent करें (Vultr Tokyo ~$5/month) → directly वहीं tool चलाएँ, कोई proxy/VPN नहीं चाहिए
+> 2. या testing के लिए personal laptop पर ProtonVPN free tier (free Japan node है) use करें
+
+---
+
 ## 📖 परिचय
 
 `gpt_signup_hybrid` एक automated ChatGPT account signup pipeline है जिसमें local web UI है, और साथ में Rust-based UPI payment bot है।

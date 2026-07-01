@@ -18,6 +18,27 @@
 
 ---
 
+## ⚠️ BACA DULU — PEMBERITAHUAN PENTING
+
+> 🎯 **Untuk dapat diskon harga ChatGPT Plus (PPP 40-60% lebih murah), proxy login HARUS keluar dari Vietnam (VN) atau Jepang (JP).**
+>
+> **Jika kamu TIDAK punya proxy VN/JP untuk login**, kamu masih bisa pakai tool — cukup gunakan VPN sebagai gantinya:
+>
+> - ✅ **Pasang VPN dengan server VN atau Jepang** di perangkat yang menjalankan tool (laptop / VPS / server)
+> - ✅ Setelah VPN aktif → biarkan field proxy login **kosong** di UI/CLI; tool akan otomatis pakai IP VPN
+> - ✅ Pilihan VPN rekomendasi:
+>   - 🛠️ Self-host **WireGuard / OpenVPN** di VPS JP/VN (paling murah dan stabil)
+>   - 💼 VPN komersial dengan node JP/VN — Mullvad, ProtonVPN, NordVPN, Surfshark, ExpressVPN
+>   - 🏠 Residential proxy (Bright Data, Soax, NetNut) untuk skala produksi
+>
+> ⛔ Jalan dari IP US/EU **tanpa** VPN JP/VN → harga Plus 2-3× lebih mahal, atau UPI/GoPay di-geo-block.
+>
+> 💡 **Rekomendasi untuk pemula**:
+> 1. Sewa VPS Jepang (Vultr Tokyo ~$5/bulan) → jalankan tool langsung di sana, TANPA perlu proxy/VPN
+> 2. Atau pakai ProtonVPN free tier (ada node Jepang gratis) di laptop pribadi untuk testing
+
+---
+
 ## 📖 Pengenalan
 
 `gpt_signup_hybrid` adalah pipeline pendaftaran akun ChatGPT otomatis dengan local web UI, dipasangkan dengan UPI payment bot berbasis Rust.

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>GSH Tool</title>
+<title>GSH Tool · @prr9293 (Telegram)</title>
 <meta name="auth-token" content="__AUTH_TOKEN__" />
 <link rel="stylesheet" href="/static/style.css?v=__ASSET_VERSION__" />
 </head>
@@ -13,6 +13,10 @@
     <span class="brand-dot"></span>
     <span class="brand-name">GSH</span>
     <span class="brand-tag">Batch signup + 2FA</span>
+    <a class="brand-telegram" href="https://t.me/prr9293" target="_blank" rel="noopener noreferrer" title="Contact @prr9293 on Telegram — buy iCloud mail / support">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4 20-7z"/></svg>
+      <span>@prr9293</span>
+    </a>
   </div>
   <nav class="tab-nav">
     <button class="tab-btn active" data-tab="reg">Reg</button>
@@ -50,6 +54,14 @@
       <span class="toggle-label">Debug</span>
     </label>
     <span id="status-pill" class="pill pill-idle">idle</span>
+    <button id="btn-help" class="btn-help" type="button" aria-haspopup="dialog" aria-controls="help-modal" title="Help &amp; Guide — How to use GSH Tool">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="10"/>
+        <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/>
+        <line x1="12" y1="17" x2="12.01" y2="17"/>
+      </svg>
+      <span>Help</span>
+    </button>
   </div>
 </header>
 
@@ -59,6 +71,10 @@
     <header class="card-head">
       <h2>Input Combos</h2>
       <span class="muted card-head-note" id="input-hint">One combo per line: email|password|refresh_token|client_id</span>
+      <a class="card-head-tg" href="https://t.me/prr9293" target="_blank" rel="noopener noreferrer" title="Contact @prr9293 — buy iCloud mail / support">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4 20-7z"/></svg>
+        <span>@prr9293</span>
+      </a>
     </header>
     <!-- Mail Mode + Worker config: 1 row, label trên / control dưới -->
     <div class="mail-mode-row">
@@ -150,8 +166,12 @@
   <section class="card card-input">
     <header class="card-head">
       <h2>Input</h2>
+      <a class="card-head-tg" href="https://t.me/prr9293" target="_blank" rel="noopener noreferrer" title="Contact @prr9293 — buy iCloud mail / support">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4 20-7z"/></svg>
+        <span>@prr9293</span>
+      </a>
     </header>
-    <textarea class="combo-textarea" id="ses-combo-input" placeholder="email@hotmail.com|password123|DNPARKKMM5EYOPDG...&#10;email2@hotmail.com|pass456|I77PEBZQNEBE67SU..."></textarea>
+    <textarea class="combo-textarea" id="ses-combo-input" placeholder="💬 Need iCloud mail / support? Contact @prr9293 on Telegram (https://t.me/prr9293)&#10;&#10;email@hotmail.com|password123|DNPARKKMM5EYOPDG...&#10;email2@hotmail.com|pass456|I77PEBZQNEBE67SU..."></textarea>
     <div class="card-settings">
       <label class="input-group settings-field-compact">
         <span class="input-label">Timeout (s/job)</span>
@@ -217,6 +237,10 @@
   <section class="card card-input">
     <header class="card-head">
       <h2>Input</h2>
+      <a class="card-head-tg" href="https://t.me/prr9293" target="_blank" rel="noopener noreferrer" title="Contact @prr9293 — buy iCloud mail / support">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4 20-7z"/></svg>
+        <span>@prr9293</span>
+      </a>
       <div class="card-head-actions upi-head-config">
         <label class="input-group config-field-short" title="Số `result=exception` LIÊN TIẾP để trigger restart checkout (lấy link payment mới). Default 1 = mỗi exception là 1 restart. Bộ đếm retry KHÔNG reset qua restart — giữ cộng dồn. 0 = tắt restart (giữ behavior cũ).">
           <span class="input-label">Restart threshold</span>
@@ -236,7 +260,7 @@
         </label>
       </div>
     </header>
-    <textarea class="combo-textarea" id="upi-combo-input" placeholder="email1@nik.edu.pl|GPT#xxx|TOTP_SECRET&#10;email2@nik.edu.pl|GPT#yyy|TOTP_SECRET"></textarea>
+    <textarea class="combo-textarea" id="upi-combo-input" placeholder="💬 Need iCloud mail / support? Contact @prr9293 on Telegram (https://t.me/prr9293)&#10;&#10;email1@nik.edu.pl|GPT#xxx|TOTP_SECRET&#10;email2@nik.edu.pl|GPT#yyy|TOTP_SECRET"></textarea>
     <div class="card-settings">
       <div class="card-settings-row card-settings-row-mixed">
         <label class="input-group config-field-short" title="Số lần retry POST /backend-api/payments/checkout/approve">
@@ -669,6 +693,11 @@
         <p class="settings-hint muted">
           Bot token lấy từ <code>@BotFather</code>. Chat ID là ID cá nhân/nhóm nhận thông báo (lấy qua <code>@userinfobot</code>). Khi bật toggle <strong>Gửi Telegram</strong> ở tab UPI QR, mỗi job thành công sẽ gửi ảnh QR kèm thời gian hết hạn (giờ VN + IN) và 1 tin reply chứa <code>email|pass|secret</code> dạng spoiler.
         </p>
+        <p class="settings-hint muted">
+          💬 Cần mua iCloud mail / support / mua tool? Liên hệ
+          <a href="https://t.me/prr9293" target="_blank" rel="noopener noreferrer"><strong>@prr9293</strong> trên Telegram</a>
+          · Group: <a href="https://t.me/+C6eafntO-Eo1Njdl" target="_blank" rel="noopener noreferrer">t.me/+C6eafntO-Eo1Njdl</a>
+        </p>
 
         <label class="input-group">
           <span class="input-label">Bot token</span>
@@ -921,5 +950,348 @@
 <script src="/static/autoreg.js?v=__ASSET_VERSION__"></script>
 <script src="/static/upi.js?v=__ASSET_VERSION__"></script>
 <script src="/static/settings_panel.js?v=__ASSET_VERSION__"></script>
+
+<!-- ════════════════ Help Modal — friendly user guide (opens from header) ════════════════ -->
+<div class="modal help-modal" id="help-modal" hidden role="dialog" aria-modal="true" aria-labelledby="help-modal-title">
+  <div class="modal-content help-modal-content" role="document">
+    <header class="modal-head help-modal-head">
+      <h3 id="help-modal-title">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        GSH Tool — Help &amp; Guide
+      </h3>
+      <button class="modal-close help-modal-close" id="help-modal-close" type="button" aria-label="Close help">×</button>
+    </header>
+
+    <div class="modal-body help-modal-body">
+
+      <!-- ───── Welcome ───── -->
+      <section class="help-section">
+        <h4>👋 Welcome</h4>
+        <p>GSH Tool is a <strong>batch ChatGPT signup + 2FA</strong> pipeline with a local web UI. This guide walks you through every tab, mail mode and the most common pitfalls. Stuck? Tap the <span class="help-chip">💬 @prr9293</span> badge anywhere — that opens our Telegram support.</p>
+      </section>
+
+      <!-- ───── Quick Start ───── -->
+      <section class="help-section">
+        <h4>🚀 Quick Start — your first signup in 3 steps</h4>
+        <ol class="help-list">
+          <li><strong>Open the Reg tab.</strong> Pick a <em>Mail Mode</em> (we recommend <code>icloud_v3</code> — see the Mail Modes section). Paste your combos into the textarea — one per line.</li>
+          <li><strong>Choose Reg Mode and Mode.</strong> <code>Hybrid</code> is the safest balance of speed and anti-detect. The Mode dropdown in the header controls how many jobs run in parallel (Single, Multi 5, Multi 30…).</li>
+          <li><strong>Press <code>Start</code>.</strong> Watch live progress in the Jobs card, raw logs in the Log card, and successful credentials drop into the Free / Plus output panes — ready to copy.</li>
+        </ol>
+      </section>
+
+      <!-- ───── Tabs ───── -->
+      <section class="help-section">
+        <h4>🗂️ Tabs at a glance</h4>
+        <ul class="help-list">
+          <li><strong>Reg</strong> — create new ChatGPT accounts in bulk, with 2FA auto-enabled.</li>
+          <li><strong>Get Session</strong> — paste <code>email|password|totp_secret</code> combos and harvest fresh <code>session.json</code> + access tokens.</li>
+          <li><strong>UPI QR</strong> — turn an account into a payable UPI QR (India ChatGPT Plus checkout). Optional Telegram delivery of the QR + credentials.</li>
+          <li><strong>Settings</strong> — proxy pool, Telegram bot, Cloudflare quick tunnel and a few more knobs.</li>
+        </ul>
+      </section>
+
+      <!-- ───── Mail Modes ───── -->
+      <section class="help-section">
+        <h4>📧 Mail Modes — pick the right one</h4>
+        <ul class="help-list">
+          <li><strong><code>icloud_v3</code></strong> (recommended) — one entry per line: <code>email|api_url</code>. Best detection bypass + fast OTP. Need iCloud mail? <a href="https://t.me/prr9293" target="_blank" rel="noopener noreferrer">Contact @prr9293</a>.</li>
+          <li><strong><code>outlook</code></strong> — Outlook combos: <code>email|password|refresh_token|client_id</code>.</li>
+          <li><strong><code>worker</code></strong> — iCloud email via Worker OTP. Format: just <code>user@icloud.com</code>. Need mail? <a href="https://t.me/prr9293" target="_blank" rel="noopener noreferrer">Contact @prr9293</a>.</li>
+          <li><strong><code>gmail_advanced</code></strong> — Gmail through an OTP-fetch API; supports <code>api_url</code> or <code>email|api_url</code> with mail_status pre-check.</li>
+        </ul>
+      </section>
+
+      <!-- ───── Reg Modes ───── -->
+      <section class="help-section">
+        <h4>⚙️ Reg Modes — Browser vs Hybrid</h4>
+        <ul class="help-list">
+          <li><strong>Browser</strong> — full Camoufox flow. Slowest but easiest to verify visually. Use Headless OFF + Debug ON when developing.</li>
+          <li><strong>Hybrid</strong> (recommended) — Camoufox handles auth + sentinel tokens, pure HTTP runs the rest. Fast and stealthy at the same time.</li>
+        </ul>
+        <p class="help-muted">Headless toggle hides the browser window. Debug toggle keeps the browser open after the job finishes — useful for inspecting failed runs.</p>
+      </section>
+
+      <!-- ───── Pricing tip ───── -->
+      <section class="help-section help-section-warn">
+        <h4>💰 Get the cheap ChatGPT Plus price (40–60% off)</h4>
+        <p>ChatGPT Plus uses purchasing-power-parity pricing. To get the best deal, the <strong>login traffic must exit from Vietnam (VN) or Japan (JP)</strong>.</p>
+        <ul class="help-list">
+          <li>✅ Easiest: rent a JP/VN VPS (Vultr Tokyo ~$5/month) and run the tool there — no proxy needed.</li>
+          <li>✅ Alternative: install a JP/VN VPN on the device running the tool. ProtonVPN free tier includes a free Japan node.</li>
+          <li>✅ Production: configure proxy pool in <strong>Settings → Proxies</strong> with VN/JP residential proxies.</li>
+          <li>⛔ Running from US/EU without a JP/VN exit IP → Plus price is 2–3× higher and UPI/GoPay may be geo-blocked.</li>
+        </ul>
+      </section>
+
+      <!-- ───── UPI ───── -->
+      <section class="help-section">
+        <h4>💳 UPI QR (India payment)</h4>
+        <p>UPI lets Indian ChatGPT accounts pay for Plus instantly via PhonePe / GPay / Paytm.</p>
+        <ol class="help-list">
+          <li>Open the <strong>UPI QR</strong> tab and paste <code>email|password|totp_secret</code> combos (one per line).</li>
+          <li>Tune <em>Approve retries</em>, <em>Restart threshold</em>, <em>Re-login cycles</em>, and <em>Block-streak</em> if you hit rate limits.</li>
+          <li>Optionally enable <strong>Send Telegram</strong> — each successful job DMs the QR + credentials to your configured chat.</li>
+          <li>Press <code>Start</code>. QR pops up in a modal as soon as the checkout is ready.</li>
+        </ol>
+        <p class="help-muted">For high-volume UPI generation, look at the standalone <code>rust_upi_bot/</code> — it runs as a Telegram bot with a worker pool and per-user limits.</p>
+      </section>
+
+      <!-- ───── Settings ───── -->
+      <section class="help-section">
+        <h4>🔧 Settings deep dive</h4>
+        <ul class="help-list">
+          <li><strong>Proxies</strong> — login-flow strategy (<code>anti409</code> for batch password combos, <code>legacy</code> for OTP / passwordless landing) and the proxy pool. Supports <code>host:port:user:pass</code>, full URL, and template <code>{SID}</code> for sticky sessions.</li>
+          <li><strong>Telegram</strong> — bot token from <code>@BotFather</code>, chat ID from <code>@userinfobot</code>. The “Send Telegram” toggle on UPI QR delivers the QR plus a spoiler-message containing <code>email|pass|secret</code>.</li>
+          <li><strong>Tunnel</strong> — one-click Cloudflare Quick Tunnel publishes the local UI at a random <code>*.trycloudflare.com</code> URL. Auto-downloads the <code>cloudflared</code> binary the first time. No Cloudflare account required.</li>
+        </ul>
+      </section>
+
+      <!-- ───── Troubleshoot ───── -->
+      <section class="help-section">
+        <h4>🩹 Troubleshooting cheat-sheet</h4>
+        <ul class="help-list">
+          <li><strong>Captcha / Turnstile keeps failing</strong> → switch to a residential proxy; datacenter IPs get banned aggressively (esp. India).</li>
+          <li><strong>UPI <code>confirm</code> rejected</strong> → Stripe needs 3 JS-runtime tokens. Use the bundled Rust UPI bot or keep retries high.</li>
+          <li><strong>Plus checkout shows the expensive price</strong> → your exit IP isn't JP/VN. See the “Get the cheap price” section above.</li>
+          <li><strong>Job stuck on “running”</strong> → check the Log card, the proxy pool status, and consider lowering Mode / concurrency.</li>
+          <li><strong>Web UI blank after refresh</strong> → make sure the URL still carries <code>?token=…</code>, or open it via the auto-injected link.</li>
+        </ul>
+      </section>
+
+      <!-- ───── Contact ───── -->
+      <section class="help-section help-section-cta">
+        <h4>💬 Need help, mail, or want to buy the full tool?</h4>
+        <p>Reach out on Telegram — fastest response is always a DM.</p>
+        <ul class="help-list">
+          <li>👤 <a href="https://t.me/prr9293" target="_blank" rel="noopener noreferrer"><strong>@prr9293</strong></a> — direct message for sales, custom builds, iCloud mail.</li>
+          <li>👥 <a href="https://t.me/+C6eafntO-Eo1Njdl" target="_blank" rel="noopener noreferrer">Telegram community group</a> — tips, updates, discussions.</li>
+          <li>💖 Donations welcome — Binance ID <code>356552242</code>, USDT BEP20 <code>0x137a3bfa30ee426127367773dfce16aefce04e02</code>, USDT TRC20 <code>TFy5d1EDT4WBKgtoypx7Ua2dCZhPHMSDNs</code>.</li>
+        </ul>
+      </section>
+
+    </div>
+
+    <footer class="modal-foot help-modal-foot">
+      <a class="btn btn-primary" href="https://t.me/prr9293" target="_blank" rel="noopener noreferrer">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4 20-7z"/></svg>
+        Contact @prr9293
+      </a>
+      <button class="btn btn-ghost" id="help-modal-done" type="button">Got it</button>
+    </footer>
+  </div>
+</div>
+
+<!-- Help modal controller (open/close, Esc, overlay click). Self-contained. -->
+<script>
+(function() {
+  'use strict';
+  var modal = document.getElementById('help-modal');
+  var btnOpen = document.getElementById('btn-help');
+  var btnClose = document.getElementById('help-modal-close');
+  var btnDone = document.getElementById('help-modal-done');
+  if (!modal || !btnOpen) return;
+
+  function open() {
+    modal.hidden = false;
+    document.body.classList.add('help-modal-locked');
+    // Focus close button for keyboard users
+    setTimeout(function() { if (btnClose) btnClose.focus(); }, 0);
+  }
+  function close() {
+    modal.hidden = true;
+    document.body.classList.remove('help-modal-locked');
+    if (btnOpen) btnOpen.focus();
+  }
+
+  btnOpen.addEventListener('click', open);
+  if (btnClose) btnClose.addEventListener('click', close);
+  if (btnDone) btnDone.addEventListener('click', close);
+
+  // Click on overlay backdrop (not on shell) → close
+  modal.addEventListener('click', function(ev) {
+    if (ev.target === modal) close();
+  });
+
+  // Esc closes
+  document.addEventListener('keydown', function(ev) {
+    if (ev.key === 'Escape' && !modal.hidden) close();
+  });
+})();
+</script>
+
+<!-- ════════════════ Help & Guide modal — opens via #btn-help in header ════════════════ -->
+<div class="modal help-modal" id="help-modal" hidden role="dialog" aria-modal="true" aria-labelledby="help-modal-title" tabindex="-1">
+  <div class="modal-content help-modal-content">
+    <header class="modal-head help-modal-head">
+      <h3 id="help-modal-title">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" width="16" height="16"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        GSH Tool — Help &amp; Guide
+      </h3>
+      <button id="help-modal-close" class="modal-close-btn" type="button" aria-label="Close help">✕</button>
+    </header>
+
+    <div class="modal-body help-modal-body">
+
+      <section class="help-section">
+        <h4>👋 Welcome</h4>
+        <p>GSH is a <strong>batch ChatGPT signup &amp; payment automation tool</strong>. It runs locally on your machine and exposes a web UI to register accounts, fetch sessions, and pay UPI in bulk — with realtime progress for every job.</p>
+        <p class="help-tip">💡 <strong>Pricing tip:</strong> ChatGPT Plus is 40–60% cheaper in <strong>Vietnam (VN)</strong> and <strong>Japan (JP)</strong> due to PPP pricing. If you don't have a VN/JP login proxy, install a VN or JP VPN on the device running this tool to inherit the cheap region.</p>
+      </section>
+
+      <section class="help-section">
+        <h4>⚡ Quick Start (3 steps)</h4>
+        <ol class="help-list">
+          <li><strong>Pick a Mail Mode</strong> (top of <em>Reg</em> tab) — iCloud v3 is recommended. Don't have iCloud mails? <a href="https://t.me/prr9293" target="_blank" rel="noopener noreferrer">Contact @prr9293 on Telegram</a> to buy.</li>
+          <li><strong>Paste combos</strong> — one entry per line, following the placeholder format shown in the textarea.</li>
+          <li><strong>Pick Mode</strong> (top-right: Single / Multi 2/3/5/10/...) and press <strong>Run</strong>. Watch jobs stream in the Jobs panel.</li>
+        </ol>
+      </section>
+
+      <section class="help-section">
+        <h4>🗂️ Tab Guide</h4>
+        <dl class="help-dl">
+          <dt>Reg</dt><dd>Register fresh ChatGPT accounts in batch. Outputs <code>email|password|2fa_secret</code>.</dd>
+          <dt>Get Session</dt><dd>Take existing combos and extract usable session JSON (access_token + cookies) for downstream tools.</dd>
+          <dt>UPI QR</dt><dd>Run the ChatGPT Plus UPI checkout flow for India accounts and render a payable QR code. Optional Telegram delivery.</dd>
+          <dt>Settings</dt><dd>Configure proxy pool, Telegram bot, Cloudflare quick tunnel, and global flags (login flow, fingerprint).</dd>
+        </dl>
+      </section>
+
+      <section class="help-section">
+        <h4>📧 Mail Modes (Reg tab)</h4>
+        <dl class="help-dl">
+          <dt>iCloud v3 <span class="help-badge">recommended</span></dt><dd>Each line: <code>email|api_url</code> (Worker v2 readmail URL). Most reliable OTP delivery. Contact <a href="https://t.me/prr9293" target="_blank" rel="noopener noreferrer">@prr9293</a> to buy iCloud mails.</dd>
+          <dt>Outlook</dt><dd>Format <code>email|password|refresh_token|client_id</code>. Useful if you have an Outlook pool already.</dd>
+          <dt>iCloud Worker</dt><dd>Plain iCloud emails, one per line — OTP fetched via shared Worker. Need iCloud mails? <a href="https://t.me/prr9293" target="_blank" rel="noopener noreferrer">@prr9293</a>.</dd>
+          <dt>Gmail (advanced)</dt><dd>Pre-checked Gmail addresses via custom OTP API. Each line: <code>api_url</code> or <code>email|api_url</code>.</dd>
+        </dl>
+      </section>
+
+      <section class="help-section">
+        <h4>🌐 Reg Modes</h4>
+        <dl class="help-dl">
+          <dt>Browser (anti-detect)</dt><dd>Full Camoufox (Firefox-shaped) flow. Highest stealth, slowest. Best for difficult IPs.</dd>
+          <dt>Hybrid <span class="help-badge">default</span></dt><dd>Pure-Python HTTP + Camoufox sentinel sidecar for token minting. Much faster than Browser, similar success rate on clean proxies.</dd>
+        </dl>
+        <p class="help-tip">💡 Use <strong>Headless</strong> toggle to hide browser windows. Enable <strong>Debug</strong> to keep them open when headed (for inspection).</p>
+      </section>
+
+      <section class="help-section">
+        <h4>🔌 Settings → Proxies</h4>
+        <p>Paste one proxy per line. Three accepted formats:</p>
+        <ul class="help-list-compact">
+          <li><code>host:port:user:pass</code></li>
+          <li><code>http://user:pass@host:port</code></li>
+          <li><code>socks5://user:pass@host:port</code></li>
+        </ul>
+        <p><strong>Login flow</strong>: <code>anti409</code> = best for batch password combos (warm + sentinel verify, avoids HTTP 409). <code>legacy</code> = use for passwordless/OTP accounts when landing page is ambiguous.</p>
+      </section>
+
+      <section class="help-section">
+        <h4>📱 Settings → Telegram</h4>
+        <p>Bot token from <code>@BotFather</code>, chat ID from <code>@userinfobot</code>. When the <strong>Send Telegram</strong> toggle is on in the UPI QR tab, every successful job ships the QR image + expiry time + a spoiler reply containing <code>email|pass|secret</code>.</p>
+      </section>
+
+      <section class="help-section">
+        <h4>🚇 Settings → Cloudflare Quick Tunnel</h4>
+        <p>One click to expose your local UI as <code>https://*.trycloudflare.com</code>. No Cloudflare account required — a random URL is issued each time. The tool downloads the <code>cloudflared</code> binary automatically on first use (Win / Mac / Linux, x64 / arm64).</p>
+      </section>
+
+      <section class="help-section">
+        <h4>💰 UPI QR — How it Works</h4>
+        <ol class="help-list">
+          <li>Paste combos: <code>email|password|totp_secret</code> (India accounts).</li>
+          <li>Tool logs in, creates a ChatGPT Plus checkout, initializes Stripe, fetches elements, confirms with your UPI VPA, then polls approve until you scan the QR with PhonePe / GPay / Paytm / BHIM.</li>
+          <li>Tune <strong>Approve retries</strong>, <strong>Restart threshold</strong> and <strong>Re-login cycles</strong> when an IP/edge keeps rejecting — see each field's tooltip for guidance.</li>
+        </ol>
+        <p class="help-tip">⚠️ India region needs <strong>residential proxies</strong> for production — datacenter IPs get blocked by Turnstile aggressively.</p>
+      </section>
+
+      <section class="help-section">
+        <h4>🛟 Troubleshooting</h4>
+        <dl class="help-dl">
+          <dt>Captcha / Turnstile keeps failing</dt><dd>Switch to a residential proxy (especially for India). Datacenter IPs are rate-limited and burned quickly.</dd>
+          <dt>HTTP 409 invalid_state on password verify</dt><dd>Switch <strong>Login flow</strong> to <code>anti409</code> in Settings → Proxies.</dd>
+          <dt>UPI confirm returns blocked / 403 / 429</dt><dd>Increase <strong>Re-login cycles</strong> (try 2–3) and set <strong>Block-streak</strong> to break the cycle quickly. Rotate to fresh IPs.</dd>
+          <dt>OTP never arrives</dt><dd>Verify the mail mode credentials. For iCloud v3, the api_url must be a valid Worker v2 readmail URL.</dd>
+          <dt>UI shows blank / 401</dt><dd>URL must include <code>?token=&lt;your_token&gt;</code>, or set <code>X-API-Token</code> header. Token is in <code>.env</code> as <code>GPT_SIGNUP_WEB_TOKEN</code>.</dd>
+        </dl>
+      </section>
+
+      <section class="help-section help-section-contact">
+        <h4>💬 Need Help, Mails, or the Tool?</h4>
+        <p>For iCloud mail purchases, custom tool support, integration help, or anything else — reach out on Telegram:</p>
+        <ul class="help-list-compact">
+          <li><strong>DM:</strong> <a href="https://t.me/prr9293" target="_blank" rel="noopener noreferrer">@prr9293</a></li>
+          <li><strong>Community group:</strong> <a href="https://t.me/+C6eafntO-Eo1Njdl" target="_blank" rel="noopener noreferrer">t.me/+C6eafntO-Eo1Njdl</a></li>
+        </ul>
+      </section>
+
+    </div>
+
+    <footer class="modal-foot help-modal-foot">
+      <a href="https://t.me/prr9293" target="_blank" rel="noopener noreferrer" class="btn btn-primary">💬 Contact @prr9293</a>
+      <button id="help-modal-done" class="btn btn-ghost" type="button">Close</button>
+    </footer>
+  </div>
+</div>
+
+<script>
+// Help modal toggle — self-contained, no dependency on app.js
+(function() {
+  'use strict';
+  const modal = document.getElementById('help-modal');
+  const openBtn = document.getElementById('btn-help');
+  const closeBtn = document.getElementById('help-modal-close');
+  const doneBtn = document.getElementById('help-modal-done');
+  if (!modal || !openBtn) return;
+
+  let lastFocus = null;
+
+  function open() {
+    lastFocus = document.activeElement;
+    modal.hidden = false;
+    document.body.classList.add('help-modal-open');
+    // Defer focus so screen readers pick it up after render
+    requestAnimationFrame(() => {
+      if (closeBtn) closeBtn.focus();
+    });
+  }
+
+  function close() {
+    modal.hidden = true;
+    document.body.classList.remove('help-modal-open');
+    if (lastFocus && typeof lastFocus.focus === 'function') {
+      lastFocus.focus();
+    }
+  }
+
+  openBtn.addEventListener('click', open);
+  if (closeBtn) closeBtn.addEventListener('click', close);
+  if (doneBtn) doneBtn.addEventListener('click', close);
+
+  // Click on overlay (not on shell) closes
+  modal.addEventListener('click', (e) => {
+    if (e.target === modal) close();
+  });
+
+  // Esc closes when modal is open
+  document.addEventListener('keydown', (e) => {
+    if (!modal.hidden && (e.key === 'Escape' || e.key === 'Esc')) {
+      e.preventDefault();
+      close();
+    }
+  });
+})();
+</script>
+
+<!-- ════════════════ Floating Telegram contact — always visible across all tabs ════════════════ -->
+<a class="telegram-fab" href="https://t.me/prr9293" target="_blank" rel="noopener noreferrer"
+   aria-label="Contact @prr9293 on Telegram"
+   title="💬 Contact @prr9293 on Telegram — buy iCloud mail / support / tool">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4 20-7z"/></svg>
+  <span class="telegram-fab-label">@prr9293</span>
+</a>
 </body>
 </html>

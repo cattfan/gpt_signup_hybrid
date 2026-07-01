@@ -29,6 +29,28 @@
 
 ---
 
+## ⚠️ READ FIRST — IMPORTANT NOTICE · CHÚ Ý
+
+> 🎯 **The Rust UPI bot runs the ChatGPT login step against India region. The ChatGPT account itself must already be created from a VN or JP IP to get the discounted Plus price — otherwise the checkout will show the expensive US/EU price even if UPI works.**
+>
+> **For the main signup tool (Python `gpt_signup_hybrid`)** — if you have no VN/JP login proxy, install a **VN or JP VPN** on the host running the tool (laptop / VPS / server). See the main project READMEs for details.
+>
+> **For this Rust UPI bot specifically**:
+> - 🇮🇳 Login + UPI flow targets India endpoints → use an **India residential proxy** for step 3+ (configured via `PROXY_POOL` env)
+> - 🇯🇵 / 🇻🇳 If you cannot get an India residential proxy and your account was created via JP/VN, the bot still works for many cases but Stripe/Turnstile rejection rate is higher
+> - 🛠️ Best practice: pair this bot with the main project's signup pipeline running on a **JP or VN VPS** so the entire account lifecycle (signup → UPI) keeps the PPP discount
+>
+> ⛔ Datacenter IPs (especially in India) are aggressively banned by Cloudflare Turnstile → residential proxy is mandatory for production scale.
+>
+> ---
+>
+> 🇻🇳 **Tiếng Việt**: Account ChatGPT phải được tạo từ IP VN hoặc JP để có giá Plus rẻ. Bot này chỉ chạy bước UPI — không tạo account. Pair với main project (signup) chạy trên VPS JP/VN.
+> 🇨🇳 **中文**: ChatGPT 账号必须从 VN 或 JP IP 创建才能获得 Plus 优惠价。本 bot 只跑 UPI 步骤，不创建账号。建议与主项目（signup）一起在 JP/VN VPS 上运行。
+> 🇮🇩 **ID**: Akun ChatGPT harus dibuat dari IP VN atau JP untuk dapat harga Plus diskon. Bot ini hanya jalankan langkah UPI. Pasangkan dengan main project di VPS JP/VN.
+> 🇮🇳 **हिन्दी**: ChatGPT account VN या JP IP से create होना चाहिए Plus discount के लिए। यह bot सिर्फ UPI step run करता है। Main project के साथ JP/VN VPS पर use करें।
+
+---
+
 ## 🇻🇳 Tiếng Việt
 
 ### Công dụng
