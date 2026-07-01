@@ -1042,9 +1042,10 @@ pub fn admin_login_proxy_set_ok(
 
     let mut notes = String::new();
     if dropped > 0 {
+        let cap = crate::settings::Settings::LOGIN_PROXY_MAX_LINES;
         match lang {
-            Lang::Vi => notes.push_str(&format!("\n⚠️ Vượt giới hạn 10 dòng — đã bỏ {} dòng cuối.", dropped)),
-            Lang::En => notes.push_str(&format!("\n⚠️ Over the 10-line cap — dropped {} extra line(s).", dropped)),
+            Lang::Vi => notes.push_str(&format!("\n⚠️ Vượt giới hạn {} dòng — đã bỏ {} dòng cuối.", cap, dropped)),
+            Lang::En => notes.push_str(&format!("\n⚠️ Over the {}-line cap — dropped {} extra line(s).", cap, dropped)),
         }
     }
     if invalid > 0 {
@@ -1082,6 +1083,172 @@ pub fn admin_login_proxy_remove_ok(lang: Lang) -> String {
         lang,
         "🧹 Đã xóa login proxy. Segment login giờ chạy DIRECT (hoặc pool global env).",
         "🧹 Login proxy removed. Login segment now runs DIRECT (or env global pool).",
+    )
+}
+
+/// Render kết quả `/proxy_login_add` khi thực sự có dòng được thêm. Chỉ liệt
+/// kê + probe các dòng vừa thêm (không show lại pool cũ) — đỡ dài, admin
+/// vẫn thấy pool_size / cap để biết còn slot.
+pub fn admin_login_proxy_add_ok(
+    lang: Lang,
+    upper_step: u32,
+    pool_size: usize,
+    masked_added: &[String],
+    probes: &[(String, std::sync::Arc<crate::bot::proxy_probe::ProbeResult>)],
+    dropped: usize,
+    invalid: usize,
+    duplicated: usize,
+) -> String {
+    let cap = crate::settings::Settings::LOGIN_PROXY_MAX_LINES;
+
+    let mut listing = String::new();
+    for (i, m) in masked_added.iter().enumerate() {
+        listing.push_str(&format!("{}. {}\n", i + 1, m));
+    }
+
+    let mut probe_lines = String::new();
+    for (i, (raw, r)) in probes.iter().enumerate() {
+        let icon = if r.ok { "✅" } else { "❌" };
+        let detail = if r.ok {
+            format!("OK · IP {} · {}ms", r.detail, r.latency_ms)
+        } else {
+            format!(
+                "FAIL · {}",
+                crate::proxy_format::sanitize_proxy_text(&r.detail)
+            )
+        };
+        probe_lines.push_str(&format!(
+            "{} #{}: {} · {}\n",
+            icon,
+            i + 1,
+            crate::proxy_format::mask_proxy(raw),
+            detail
+        ));
+    }
+
+    let mut notes = String::new();
+    if duplicated > 0 {
+        match lang {
+            Lang::Vi => notes.push_str(&format!("\n⚠️ Bỏ {} dòng trùng đã có trong pool.", duplicated)),
+            Lang::En => notes.push_str(&format!("\n⚠️ Skipped {} duplicate line(s) already in pool.", duplicated)),
+        }
+    }
+    if dropped > 0 {
+        match lang {
+            Lang::Vi => notes.push_str(&format!("\n⚠️ Vượt giới hạn {} dòng — đã bỏ {} dòng cuối.", cap, dropped)),
+            Lang::En => notes.push_str(&format!("\n⚠️ Over the {}-line cap — dropped {} extra line(s).", cap, dropped)),
+        }
+    }
+    if invalid > 0 {
+        match lang {
+            Lang::Vi => notes.push_str(&format!("\n⚠️ Bỏ {} dòng sai định dạng.", invalid)),
+            Lang::En => notes.push_str(&format!("\n⚠️ Skipped {} invalid line(s).", invalid)),
+        }
+    }
+
+    pick(
+        lang,
+        &format!(
+            "✅ Đã thêm {} dòng vào pool login proxy (pool giờ {}/{}) — áp cho step 1..{} (login).\n\
+             Vừa thêm:\n{}\n\
+             🔍 Kiểm tra:\n{}\nMỗi job sẽ pick random 1 line từ pool live (loại bỏ dead/quá chậm trước).{}",
+            masked_added.len(),
+            pool_size,
+            cap,
+            upper_step,
+            listing,
+            probe_lines,
+            notes
+        ),
+        &format!(
+            "✅ Added {} line(s) to login proxy pool (pool now {}/{}) — applied to step 1..{} (login).\n\
+             Just added:\n{}\n\
+             🔍 Probe:\n{}\nEach job will pick a random line from the live pool (dead/slow ones are dropped).{}",
+            masked_added.len(),
+            pool_size,
+            cap,
+            upper_step,
+            listing,
+            probe_lines,
+            notes
+        ),
+    )
+}
+
+/// Render khi `/proxy_login_add` không có dòng nào để thêm (toàn duplicate
+/// hoặc invalid không đủ để dừng). Chỉ thông báo, không probe.
+pub fn admin_login_proxy_add_noop(
+    lang: Lang,
+    pool_size: usize,
+    duplicated: usize,
+    invalid: usize,
+) -> String {
+    let cap = crate::settings::Settings::LOGIN_PROXY_MAX_LINES;
+    let mut notes = String::new();
+    if duplicated > 0 {
+        match lang {
+            Lang::Vi => notes.push_str(&format!("\n⚠️ Bỏ {} dòng trùng đã có trong pool.", duplicated)),
+            Lang::En => notes.push_str(&format!("\n⚠️ Skipped {} duplicate line(s) already in pool.", duplicated)),
+        }
+    }
+    if invalid > 0 {
+        match lang {
+            Lang::Vi => notes.push_str(&format!("\n⚠️ Bỏ {} dòng sai định dạng.", invalid)),
+            Lang::En => notes.push_str(&format!("\n⚠️ Skipped {} invalid line(s).", invalid)),
+        }
+    }
+    pick(
+        lang,
+        &format!(
+            "ℹ️ Không có dòng nào được thêm. Pool giữ nguyên {}/{}.{}",
+            pool_size, cap, notes
+        ),
+        &format!(
+            "ℹ️ No lines added. Pool unchanged at {}/{}.{}",
+            pool_size, cap, notes
+        ),
+    )
+}
+
+/// Render khi pool đã đầy (không còn slot). Báo rõ cap để admin biết cần
+/// `/proxy_login_remove` hoặc `/proxy_login_set` để dọn.
+pub fn admin_login_proxy_add_full(
+    lang: Lang,
+    pool_size: usize,
+    dropped: usize,
+    duplicated: usize,
+    invalid: usize,
+) -> String {
+    let cap = crate::settings::Settings::LOGIN_PROXY_MAX_LINES;
+    let mut notes = String::new();
+    if dropped > 0 {
+        match lang {
+            Lang::Vi => notes.push_str(&format!("\n⚠️ Vượt giới hạn {} dòng — đã bỏ {} dòng cuối.", cap, dropped)),
+            Lang::En => notes.push_str(&format!("\n⚠️ Over the {}-line cap — dropped {} extra line(s).", cap, dropped)),
+        }
+    }
+    if duplicated > 0 {
+        match lang {
+            Lang::Vi => notes.push_str(&format!("\n⚠️ Bỏ {} dòng trùng đã có trong pool.", duplicated)),
+            Lang::En => notes.push_str(&format!("\n⚠️ Skipped {} duplicate line(s) already in pool.", duplicated)),
+        }
+    }
+    if invalid > 0 {
+        match lang {
+            Lang::Vi => notes.push_str(&format!("\n⚠️ Bỏ {} dòng sai định dạng.", invalid)),
+            Lang::En => notes.push_str(&format!("\n⚠️ Skipped {} invalid line(s).", invalid)),
+        }
+    }
+    pick(
+        lang,
+        &format!(
+            "⚠️ Pool login proxy đã đầy ({}/{}). Không thể thêm — cần /proxy_login_remove để dọn hoặc /proxy_login_set để ghi đè.{}",
+            pool_size, cap, notes
+        ),
+        &format!(
+            "⚠️ Login proxy pool is full ({}/{}). Cannot append — use /proxy_login_remove to clear or /proxy_login_set to overwrite.{}",
+            pool_size, cap, notes
+        ),
     )
 }
 

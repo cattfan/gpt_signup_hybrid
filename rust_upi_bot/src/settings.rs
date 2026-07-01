@@ -142,8 +142,8 @@ impl Settings {
     // ── login proxy (admin-only, global) ──────────────────────────────────
     /// Số dòng login proxy tối đa admin được set. Tương tự `USER_PROXY_MAX_LINES`
     /// nhưng cho login segment (step < proxy_from_step). 1 admin = 1 pool nhỏ,
-    /// mỗi job pick random 1 line.
-    pub const LOGIN_PROXY_MAX_LINES: usize = 10;
+    /// mỗi job pick random 1 line. Cao hơn user vì admin dùng cho toàn hệ thống.
+    pub const LOGIN_PROXY_MAX_LINES: usize = 100;
 
     /// Đọc danh sách login proxy raw (newline-separated, key `proxy.login`).
     /// Trim + dedupe + cap `LOGIN_PROXY_MAX_LINES`. Empty = chưa set.
@@ -608,5 +608,34 @@ impl Settings {
             .into_iter()
             .map(|(uid, n)| (uid, n.clamp(Self::MAX_PER_USER_MIN, Self::MAX_PER_USER_MAX)))
             .collect())
+    }
+
+    // ── max_concurrent (global runtime, hot-reload) ───────────────────────
+    /// Hard range cho `max_concurrent`. Floor=1 đảm bảo bot không kẹt 0
+    /// worker; cap=1000 giữ RAM trong khoảng an toàn (mỗi worker giữ vài
+    /// socket TLS + alloc state — 300 worker đã ~150MB).
+    pub const MAX_CONCURRENT_MIN: u32 = 1;
+    pub const MAX_CONCURRENT_MAX: u32 = 1000;
+    /// Settings key cho global concurrency. Đọc tại boot (`apply_settings`),
+    /// ghi qua write-through trong `/set_max_concurrent`.
+    pub const KEY_MAX_CONCURRENT: &'static str = "limits.max_concurrent";
+
+    /// Đọc giá trị global từ DB. None = chưa set lần nào → caller seed bằng
+    /// CLI flag `--max-concurrent`.
+    pub fn get_max_concurrent(&self) -> Option<u32> {
+        self.get_u32(Self::KEY_MAX_CONCURRENT)
+            .map(|n| n.clamp(Self::MAX_CONCURRENT_MIN, Self::MAX_CONCURRENT_MAX))
+    }
+
+    /// Set global. Caller PHẢI clamp `MAX_CONCURRENT_MIN..=MAX_CONCURRENT_MAX`
+    /// trước. Effect: chỉ persist — caller phải gọi
+    /// `ConcurrencyController::set_max` để áp ngay (không restart).
+    pub fn set_max_concurrent(&self, n: u32) -> Result<()> {
+        debug_assert!(
+            (Self::MAX_CONCURRENT_MIN..=Self::MAX_CONCURRENT_MAX).contains(&n),
+            "set_max_concurrent: out of range {}",
+            n
+        );
+        self.set(Self::KEY_MAX_CONCURRENT, &n.to_string())
     }
 }

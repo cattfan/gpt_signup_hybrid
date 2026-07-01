@@ -12,10 +12,69 @@ use crate::http::HttpClient;
 use crate::upi::runner::{run_upi_qr, UpiJobConfig};
 use crate::upi::types::UpiQrResult;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, Mutex, Semaphore};
 use tokio_util::sync::CancellationToken;
+
+/// Controller cho semaphore concurrency global của worker pool. Resize được
+/// tại runtime (admin `/set_max_concurrent` không cần restart).
+///
+/// Cơ chế:
+///   * `current` (AtomicUsize) — giá trị max hiện tại, đọc/ghi không lock.
+///   * `sem` — semaphore Tokio. Tăng = `add_permits`. Giảm = spawn task
+///     `acquire_owned().await.forget()` đến khi đã rút đủ delta permits;
+///     **không kill job đang chạy**, chỉ ngăn job mới vào quá mức.
+pub struct ConcurrencyController {
+    sem: Arc<Semaphore>,
+    current: AtomicUsize,
+}
+
+impl ConcurrencyController {
+    pub fn new(initial: usize) -> Arc<Self> {
+        let initial = initial.max(1);
+        Arc::new(Self {
+            sem: Arc::new(Semaphore::new(initial)),
+            current: AtomicUsize::new(initial),
+        })
+    }
+
+    /// Giá trị max hiện tại.
+    pub fn current(&self) -> usize {
+        self.current.load(Ordering::Acquire)
+    }
+
+    /// Semaphore handle để worker `acquire_owned`. Cloneable.
+    pub fn sem(&self) -> Arc<Semaphore> {
+        self.sem.clone()
+    }
+
+    /// Resize. Trả `(old, new)` để caller log. Khi giảm, các permit chỉ thực
+    /// sự được rút khi worker hiện hữu trả về — job chạy dở không bị giết.
+    pub fn set_max(self: &Arc<Self>, new: usize) -> (usize, usize) {
+        let new = new.max(1);
+        let old = self.current.swap(new, Ordering::AcqRel);
+        if new > old {
+            self.sem.add_permits(new - old);
+        } else if new < old {
+            let to_shrink = old - new;
+            let sem = self.sem.clone();
+            tokio::spawn(async move {
+                // Rút từng permit 1 — mỗi lần worker trả về sem, vòng tiếp theo
+                // shrink ngay. Không acquire_many vì sẽ block đến khi đủ
+                // permits sẵn → khe race với job đang chạy.
+                for _ in 0..to_shrink {
+                    match sem.clone().acquire_owned().await {
+                        Ok(p) => p.forget(),
+                        Err(_) => break, // semaphore đã closed
+                    }
+                }
+            });
+        }
+        (old, new)
+    }
+}
 
 pub struct Job {
     pub user_id: i64,
@@ -84,7 +143,9 @@ impl JobQueue {
 }
 
 pub struct WorkerConfig {
-    pub max_concurrent: usize,
+    /// Controller chia sẻ với admin command `/set_max_concurrent` — resize
+    /// runtime, không tạo Semaphore mới trong `spawn_workers`.
+    pub controller: Arc<ConcurrencyController>,
     pub job_timeout: Duration,
 }
 
@@ -102,7 +163,7 @@ pub fn spawn_workers(
     on_done: Arc<dyn Fn(i64, u64) + Send + Sync>,
     cfg: WorkerConfig,
 ) {
-    let sem = Arc::new(Semaphore::new(cfg.max_concurrent));
+    let sem = cfg.controller.sem();
     let active = Arc::new(Mutex::new(0usize));
 
     tokio::spawn(async move {

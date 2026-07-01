@@ -1,0 +1,55 @@
+Hi Stripe Security team,
+
+I'd like to report — in good faith and under your coordinated disclosure policy — a potential abuse-protection concern on the UPI payment flow.
+
+== Summary ==
+Public Telegram bots and similar abuse-as-a-service offerings appear to be
+mass-producing UPI QR codes via Stripe's PaymentIntent / Checkout Session
+creation endpoints, with no real payment intent. This suggests that the
+per-merchant rate limit / outlier detection on UPI intent creation may be
+weaker than what is enforced on card flows.
+
+== Vector (concept level) ==
+- Endpoint: any server-side intent / session creation API supporting
+  payment_method_types = ['upi'].
+- Each successful create returns a fresh UPI deeplink + QR image.
+- Observation: high-volume, low-pay-ratio create patterns do not appear
+  to trigger meaningful friction (CAPTCHA, throttle, suspension) in a
+  reasonable window.
+
+== PoC reproducibility ==
+I have a concept-level PoC that reproduces the issue in a standalone
+Stripe test account I control. No third-party merchant credentials,
+API keys, or proprietary code are involved.
+
+I'd prefer to share the detailed PoC (logs, decoded sample QRs, timing,
+HTTP code distribution) over a secure channel once you confirm scope
+and preferred submission format.
+
+== Severity (self-assessed) ==
+Medium — primarily resource abuse and abuse-as-a-service enablement,
+with downstream fraud-signal and reputation impact.
+
+== Suggested mitigations ==
+1. Adaptive per-merchant rate limit on UPI-only intent creation.
+2. Outlier detection on `intent_paid / intent_created` ratio per merchant.
+3. Optional friction (CAPTCHA / Radar) at Checkout Session creation
+   for UPI when client fingerprint / IP looks suspicious.
+4. Tighter test-mode quotas to prevent free exploit rehearsal.
+
+== Questions ==
+1. Is this vector in scope for your bug bounty / responsible disclosure
+   program (HackerOne `stripe`)?
+2. Preferred channel for sharing the detailed PoC (HackerOne private
+   report, PGP email, secure file transfer)?
+3. Acceptable disclosure timeline from your side?
+
+I will not publish technical details until you confirm a fix is in place
+or explicitly decline to triage.
+
+Thanks for your time and for the work the Stripe Security team does.
+
+Best,
+[Your name]
+[Optional: HackerOne handle]
+[Optional: PGP fingerprint]

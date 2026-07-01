@@ -1,0 +1,33 @@
+[Unit]
+Description=upi-qr-bot - UPI QR Telegram bot (Rust)
+Documentation=https://t.me/prr9293
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/upi-qr-bot
+EnvironmentFile=/etc/upi-qr-bot.env
+Restart=always
+RestartSec=5
+# 500 worker đồng thời × nhiều socket (UPI + login wreq + TLS) → nâng FD
+# limit lên 65536. Code rlimit tự nâng tới max_concurrent*64 nhưng kernel chỉ
+# áp được nếu systemd cho phép tới hard limit này.
+LimitNOFILE=65536
+# Chống fork bomb edge-case (mỗi worker spawn tokio task, không spawn process
+# con — nhưng giữ trần để fail-fast nếu bị inject).
+LimitNPROC=4096
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=upi-qr-bot
+
+# Hardening (gioi han toi thieu cho bot doc env + ghi DB + ghi /tmp)
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=false
+ReadWritePaths=/var/lib/upi-qr-bot /tmp
+
+[Install]
+WantedBy=multi-user.target

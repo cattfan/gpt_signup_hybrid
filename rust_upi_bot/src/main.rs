@@ -32,7 +32,7 @@ use crate::bot::board::{JobBoard, JobStatus};
 use crate::bot::dashboard::DashboardManager;
 use crate::bot::i18n::{self, Lang};
 use crate::bot::limiter::{AdmitDecision, MessageDecision, UserLimiter};
-use crate::bot::queue::{spawn_workers, Job, JobEvent, JobQueue, SubmitError, WorkerConfig};
+use crate::bot::queue::{spawn_workers, ConcurrencyController, Job, JobEvent, JobQueue, SubmitError, WorkerConfig};
 use crate::bot::registry::JobRegistry;
 use crate::bot::telegram::{CallbackQuery, Message, TelegramClient};
 use crate::http::HttpClient;
@@ -273,10 +273,12 @@ fn localized_commands(lang: Lang, is_admin: bool) -> Vec<(&'static str, &'static
                 ("notify_remove", "Xóa kênh thông báo (admin)"),
                 ("notify_test", "Test kênh thông báo (admin)"),
                 ("proxy_login_set", "Đặt login proxy chung (admin)"),
+                ("proxy_login_add", "Thêm login proxy vào pool chung (admin)"),
                 ("proxy_login_remove", "Xóa login proxy chung (admin)"),
                 ("proxy_check_user", "Xem proxy của user (admin, raw)"),
                 ("set_max_per_user", "Đặt giới hạn tiến trình/user toàn cục (admin)"),
                 ("set_user_limit", "Override giới hạn cho 1 user (admin)"),
+                ("set_max_concurrent", "Đặt tổng worker concurrent toàn bot (admin)"),
             ],
             Lang::En => vec![
                 ("notify", "Broadcast to all users (admin)"),
@@ -290,10 +292,12 @@ fn localized_commands(lang: Lang, is_admin: bool) -> Vec<(&'static str, &'static
                 ("notify_remove", "Remove notify channel (admin)"),
                 ("notify_test", "Test notify channel (admin)"),
                 ("proxy_login_set", "Set shared login proxy (admin)"),
+                ("proxy_login_add", "Add login proxies to shared pool (admin)"),
                 ("proxy_login_remove", "Remove shared login proxy (admin)"),
                 ("proxy_check_user", "Show user's proxy (admin, raw)"),
                 ("set_max_per_user", "Set global concurrent process limit (admin)"),
                 ("set_user_limit", "Override per-user limit (admin)"),
+                ("set_max_concurrent", "Set bot-wide concurrent worker count (admin)"),
             ],
         };
         v.extend(admin);
@@ -337,18 +341,6 @@ async fn main() -> Result<()> {
 
     let allowed_users = parse_allowed_users(&cli.allowed_users);
     let proxy_pool = parse_proxy_pool(&cli.proxy_pool);
-
-    // Nâng giới hạn file descriptor cho nhiều tiến trình đồng thời (mỗi job mở
-    // socket UPI + login). Chạy root nên set được cả hard limit (tới fs.nr_open).
-    let want_nofile: u64 = (cli.max_concurrent as u64 * 64).clamp(8192, 262144);
-    if let Err(e) = rlimit::Resource::NOFILE.set(want_nofile, want_nofile) {
-        // Fallback: ít nhất nâng soft tới hard hiện có.
-        let _ = rlimit::increase_nofile_limit(want_nofile);
-        warn!("set nofile hard limit fail: {} (đã nâng soft tới hard)", e);
-    }
-    if let Ok((soft, hard)) = rlimit::Resource::NOFILE.get() {
-        info!("nofile limit: soft={} hard={}", soft, hard);
-    }
 
     std::fs::create_dir_all(&cli.qr_out_dir).ok();
     std::fs::create_dir_all(&cli.bundles_cache_dir).ok();
@@ -432,6 +424,42 @@ async fn main() -> Result<()> {
     let registry = JobRegistry::new();
     let board = JobBoard::new();
     let dashboard = DashboardManager::new();
+    // ── max_concurrent global: hot-reload qua /set_max_concurrent ─────────
+    // Hierarchy giống max_per_user: DB key win, seed từ CLI nếu DB chưa có.
+    // Range 1..=1000 đảm bảo bot không kẹt 0 worker mà cũng không OOM.
+    let initial_max_concurrent = match store.get_max_concurrent() {
+        Some(n) => n as usize,
+        None => {
+            let seed = (cli.max_concurrent as u32).clamp(
+                settings::Settings::MAX_CONCURRENT_MIN,
+                settings::Settings::MAX_CONCURRENT_MAX,
+            );
+            if let Err(e) = store.set_max_concurrent(seed) {
+                warn!("seed limits.max_concurrent fail: {}", e);
+            } else {
+                info!("seeded limits.max_concurrent={} (DB lần đầu)", seed);
+            }
+            seed as usize
+        }
+    };
+    info!("max_concurrent effective={}", initial_max_concurrent);
+    let concurrency = ConcurrencyController::new(initial_max_concurrent);
+
+    // Nâng giới hạn file descriptor — TÍNH THEO giá trị effective load từ DB
+    // chứ KHÔNG dùng `cli.max_concurrent` (CLI flag chỉ là seed lần đầu;
+    // admin đổi qua /set_max_concurrent vào DB, env không còn match). Mỗi
+    // worker dùng tới ~64 FD (UPI socket + login wreq + TLS buffer + cookies).
+    // Clamp(8192, 262144) bảo đảm không tụt dưới mức an toàn cũng không vượt
+    // fs.nr_open mặc định Ubuntu.
+    let want_nofile: u64 = (initial_max_concurrent as u64 * 64).clamp(8192, 262144);
+    if let Err(e) = rlimit::Resource::NOFILE.set(want_nofile, want_nofile) {
+        let _ = rlimit::increase_nofile_limit(want_nofile);
+        warn!("set nofile hard limit fail: {} (đã nâng soft tới hard)", e);
+    }
+    if let Ok((soft, hard)) = rlimit::Resource::NOFILE.get() {
+        info!("nofile limit: soft={} hard={}", soft, hard);
+    }
+
     let limiter_for_done = limiter.clone();
     let registry_for_done = registry.clone();
     let on_done: Arc<dyn Fn(i64, u64) + Send + Sync> = Arc::new(move |user_id: i64, job_id: u64| {
@@ -447,7 +475,7 @@ async fn main() -> Result<()> {
         queue_rx,
         on_done,
         WorkerConfig {
-            max_concurrent: cli.max_concurrent,
+            controller: concurrency.clone(),
             job_timeout: Duration::from_secs(cli.job_timeout_seconds),
         },
     );
@@ -531,10 +559,12 @@ async fn main() -> Result<()> {
             ("notify_remove", "Remove notify channel (admin)"),
             ("notify_test", "Test notify channel (admin)"),
             ("proxy_login_set", "Set shared login proxy (admin)"),
+            ("proxy_login_add", "Add login proxies to shared pool (admin)"),
             ("proxy_login_remove", "Remove shared login proxy (admin)"),
             ("proxy_check_user", "Show user's proxy (admin, raw)"),
             ("set_max_per_user", "Set global concurrent process limit (admin)"),
             ("set_user_limit", "Override per-user limit (admin)"),
+            ("set_max_concurrent", "Set bot-wide concurrent worker count (admin)"),
         ];
         if let Err(e) = tg
             .set_my_commands_for_chat(cli.admin_chat_id, admin_commands)
@@ -562,6 +592,7 @@ async fn main() -> Result<()> {
                         let cli = cli.clone();
                         let board = board.clone();
                         let dashboard = dashboard.clone();
+                        let concurrency = concurrency.clone();
                         tokio::spawn(async move {
                             if let Err(e) = handle_message(
                                 tg,
@@ -575,6 +606,7 @@ async fn main() -> Result<()> {
                                 &cli,
                                 board,
                                 dashboard,
+                                concurrency,
                             )
                             .await
                             {
@@ -630,6 +662,7 @@ async fn handle_message(
     cli: &Cli,
     board: JobBoard,
     dashboard: DashboardManager,
+    concurrency: Arc<ConcurrencyController>,
 ) -> Result<()> {
     let user_id = msg.from.as_ref().map(|u| u.id).unwrap_or(0);
     let username = msg.from.as_ref().and_then(|u| u.username.clone());
@@ -837,10 +870,10 @@ async fn handle_message(
 
         match cmd_base {
             "/notify" | "/chat" | "/ban" | "/unban" | "/banlist"
-            | "/proxy_login_set" | "/proxy_login_remove" | "/stopall" | "/flushall"
+            | "/proxy_login_set" | "/proxy_login_add" | "/proxy_login_remove" | "/stopall" | "/flushall"
             | "/set_notify" | "/notify_remove" | "/notify_test"
             | "/proxy_check_user"
-            | "/set_max_per_user" | "/set_user_limit" => {
+            | "/set_max_per_user" | "/set_user_limit" | "/set_max_concurrent" => {
                 if !is_admin {
                     tg.send_message(
                         msg.chat.id,
@@ -861,6 +894,9 @@ async fn handle_message(
                     "/banlist" => handle_banlist(&tg, &store, &msg).await,
                     "/proxy_login_set" => {
                         handle_proxy_login_set(&tg, &store, &msg, text, cli.proxy_from_step).await
+                    }
+                    "/proxy_login_add" => {
+                        handle_proxy_login_add(&tg, &store, &msg, text, cli.proxy_from_step).await
                     }
                     "/proxy_login_remove" => {
                         handle_proxy_login_remove(&tg, &store, &msg).await
@@ -894,6 +930,12 @@ async fn handle_message(
                     "/set_user_limit" => {
                         handle_set_user_limit(
                             &tg, &store, &limiter, &msg, text, cli.admin_chat_id,
+                        )
+                        .await
+                    }
+                    "/set_max_concurrent" => {
+                        handle_set_max_concurrent(
+                            &tg, &store, &concurrency, &msg, text, cli.admin_chat_id,
                         )
                         .await
                     }
@@ -3591,12 +3633,15 @@ async fn handle_proxy_login_set(
         if lines.is_empty() {
             tg.send_message(
                 msg.chat.id,
-                "ℹ️ Chưa set login proxy.\n\nUsage (1 hoặc nhiều dòng, tối đa 10):\n\
-                 /proxy_login_set host:port\n\
-                 host:port:user:pass\n\
-                 http://user:pass@host:port\n\
-                 socks5://user:pass@host:1080\n\n\
-                 Mỗi job pick random 1 line từ pool. Hỗ trợ {SID} cho sticky session.",
+                &format!(
+                    "ℹ️ Chưa set login proxy.\n\nUsage (1 hoặc nhiều dòng, tối đa {}):\n\
+                     /proxy_login_set host:port\n\
+                     host:port:user:pass\n\
+                     http://user:pass@host:port\n\
+                     socks5://user:pass@host:1080\n\n\
+                     Mỗi job pick random 1 line từ pool. Hỗ trợ {{SID}} cho sticky session.",
+                    settings::Settings::LOGIN_PROXY_MAX_LINES,
+                ),
                 Some(msg.message_id),
             )
             .await
@@ -3696,6 +3741,174 @@ async fn handle_proxy_login_set(
         &probes,
         dropped,
         invalid,
+    );
+    tg.send_message(msg.chat.id, &body, Some(msg.message_id))
+        .await
+        .ok();
+}
+
+/// `/proxy_login_add <line(s)>` — ADMIN append proxy vào pool login hiện tại.
+/// Khác `/proxy_login_set` (ghi đè): giữ nguyên pool cũ, chỉ thêm dòng mới.
+/// Bỏ qua dòng đã có sẵn (duplicated), bỏ dòng sai format (invalid), cắt
+/// phần vượt `LOGIN_PROXY_MAX_LINES` (dropped). Probe TƯƠI chỉ các dòng thực
+/// sự được thêm để admin verify.
+async fn handle_proxy_login_add(
+    tg: &Arc<TelegramClient>,
+    store: &Arc<settings::Settings>,
+    msg: &Message,
+    text: &str,
+    proxy_from_step: u32,
+) {
+    let admin_lang_v = lang_or_default(store, msg.from.as_ref().map(|u| u.id).unwrap_or(0));
+    let upper_step = proxy_from_step.saturating_sub(1).max(1);
+    let cap = settings::Settings::LOGIN_PROXY_MAX_LINES;
+
+    let body_opt = command_body(text);
+    if body_opt.is_none() {
+        tg.send_message(
+            msg.chat.id,
+            &format!(
+                "ℹ️ Usage: /proxy_login_add <dòng 1>\\n<dòng 2>...\n\
+                 Thêm proxy vào pool hiện tại (không ghi đè). Dòng trùng bị bỏ qua.\n\
+                 Pool tối đa {} dòng. Xem pool hiện tại: /proxy_login_set (không kèm arg).",
+                cap
+            ),
+            Some(msg.message_id),
+        )
+        .await
+        .ok();
+        return;
+    }
+
+    let (arg, _) = body_opt.unwrap();
+
+    // Parse dòng mới: trim, bỏ rỗng, dedupe trong batch (giữ thứ tự).
+    let mut seen_in_batch: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut batch_lines: Vec<String> = Vec::new();
+    for line in arg.lines() {
+        let t = line.trim();
+        if t.is_empty() {
+            continue;
+        }
+        if seen_in_batch.insert(t.to_string()) {
+            batch_lines.push(t.to_string());
+        }
+    }
+    if batch_lines.is_empty() {
+        tg.send_message(
+            msg.chat.id,
+            &i18n::proxy_empty_line(admin_lang_v),
+            Some(msg.message_id),
+        )
+        .await
+        .ok();
+        return;
+    }
+
+    // Validate từng dòng.
+    let mut valid_new: Vec<String> = Vec::new();
+    let mut first_invalid_err: Option<String> = None;
+    let mut invalid = 0usize;
+    for line in &batch_lines {
+        match proxy_format::validate_and_mask(line) {
+            Ok(_) => valid_new.push(line.clone()),
+            Err(e) => {
+                invalid += 1;
+                if first_invalid_err.is_none() {
+                    first_invalid_err = Some(format!("`{}`: {}", line, e));
+                }
+            }
+        }
+    }
+
+    // Dedupe với pool existing.
+    let existing: Vec<String> = store.get_login_proxies();
+    let existing_set: std::collections::HashSet<&str> =
+        existing.iter().map(|s| s.as_str()).collect();
+    let mut candidates: Vec<String> = Vec::new();
+    let mut duplicated = 0usize;
+    for line in valid_new {
+        if existing_set.contains(line.as_str()) {
+            duplicated += 1;
+        } else {
+            candidates.push(line);
+        }
+    }
+
+    if candidates.is_empty() {
+        // Không có gì mới. Nếu toàn invalid → báo lỗi format, ngược lại báo "no-op".
+        if invalid > 0 && duplicated == 0 {
+            tg.send_message(
+                msg.chat.id,
+                &i18n::admin_invalid_proxy_format(
+                    admin_lang_v,
+                    &first_invalid_err.unwrap_or_else(|| "no valid line".into()),
+                ),
+                Some(msg.message_id),
+            )
+            .await
+            .ok();
+            return;
+        }
+        tg.send_message(
+            msg.chat.id,
+            &i18n::admin_login_proxy_add_noop(admin_lang_v, existing.len(), duplicated, invalid),
+            Some(msg.message_id),
+        )
+        .await
+        .ok();
+        return;
+    }
+
+    // Cắt theo cap: chỉ thêm được `remaining` dòng, phần dư → dropped.
+    let remaining = cap.saturating_sub(existing.len());
+    let dropped = candidates.len().saturating_sub(remaining);
+    let added: Vec<String> = candidates.into_iter().take(remaining).collect();
+
+    if added.is_empty() {
+        // Pool đã đầy — báo rõ.
+        tg.send_message(
+            msg.chat.id,
+            &i18n::admin_login_proxy_add_full(admin_lang_v, existing.len(), dropped, duplicated, invalid),
+            Some(msg.message_id),
+        )
+        .await
+        .ok();
+        return;
+    }
+
+    // Ghi merged pool.
+    let mut merged: Vec<String> = existing;
+    merged.extend(added.iter().cloned());
+    if let Err(e) = store.set_login_proxies(&merged) {
+        tg.send_message(
+            msg.chat.id,
+            &i18n::proxy_save_failed(admin_lang_v, &e.to_string()),
+            Some(msg.message_id),
+        )
+        .await
+        .ok();
+        return;
+    }
+
+    // Probe tươi CHỈ các dòng thực sự vừa thêm (không probe lại dòng cũ).
+    let probe_futs = added.iter().map(|raw| {
+        let raw = raw.clone();
+        async move { (raw.clone(), bot::proxy_status::PROXY_STATUS.refresh(&raw).await) }
+    });
+    let probes: Vec<(String, Arc<bot::proxy_probe::ProbeResult>)> =
+        futures_util::future::join_all(probe_futs).await;
+
+    let masked_added: Vec<String> = added.iter().map(|s| proxy_format::mask_proxy(s)).collect();
+    let body = i18n::admin_login_proxy_add_ok(
+        admin_lang_v,
+        upper_step,
+        merged.len(),
+        &masked_added,
+        &probes,
+        dropped,
+        invalid,
+        duplicated,
     );
     tg.send_message(msg.chat.id, &body, Some(msg.message_id))
         .await
@@ -3917,6 +4130,116 @@ async fn handle_proxy_check_user(
     // (đã có cảnh báo trong header).
     body.push_str(&render_pool_probe_result(alang, &lines, &results, false));
     tg.send_message_kb_html(msg.chat.id, &body, Value::Array(vec![]))
+        .await
+        .ok();
+}
+
+/// `/set_max_concurrent [n]` — ADMIN đổi tổng số worker concurrent toàn bot.
+/// No-arg: hiển thị giá trị hiện tại. Có arg: validate
+/// `MAX_CONCURRENT_MIN..=MAX_CONCURRENT_MAX`, ghi DB + resize
+/// `ConcurrencyController` (hot reload, áp ngay — job đang chạy không bị
+/// kill, chỉ ảnh hưởng job mới khi giảm; khi tăng job pending được pickup
+/// ngay).
+async fn handle_set_max_concurrent(
+    tg: &Arc<TelegramClient>,
+    store: &Arc<settings::Settings>,
+    controller: &Arc<ConcurrencyController>,
+    msg: &Message,
+    text: &str,
+    admin_id: i64,
+) {
+    use crate::bot::board::html_escape;
+    let alang = lang_or_default(store, admin_id);
+    let vi = matches!(alang, Lang::Vi);
+    let body_opt = command_body(text);
+
+    if body_opt.is_none() {
+        let current = controller.current();
+        let line = if vi {
+            format!(
+                "⚙️ <b>max_concurrent toàn cục</b>: <code>{}</code>\n\
+                 Đổi bằng: <code>/set_max_concurrent &lt;n&gt;</code> (range {}..{})",
+                current,
+                settings::Settings::MAX_CONCURRENT_MIN,
+                settings::Settings::MAX_CONCURRENT_MAX,
+            )
+        } else {
+            format!(
+                "⚙️ <b>Global max_concurrent</b>: <code>{}</code>\n\
+                 Change with: <code>/set_max_concurrent &lt;n&gt;</code> (range {}..{})",
+                current,
+                settings::Settings::MAX_CONCURRENT_MIN,
+                settings::Settings::MAX_CONCURRENT_MAX,
+            )
+        };
+        tg.send_message_kb_html(msg.chat.id, &line, Value::Array(vec![]))
+            .await
+            .ok();
+        return;
+    }
+
+    let (arg, _) = body_opt.unwrap();
+    let token = arg.split_whitespace().next().unwrap_or("");
+    let parsed: Option<u32> = token.parse().ok();
+    let invalid_msg = |t: &str| -> String {
+        if vi {
+            format!(
+                "❌ Giá trị <code>{}</code> không hợp lệ. Cần là số nguyên trong [{}, {}].",
+                html_escape(t),
+                settings::Settings::MAX_CONCURRENT_MIN,
+                settings::Settings::MAX_CONCURRENT_MAX,
+            )
+        } else {
+            format!(
+                "❌ Invalid value <code>{}</code>. Must be integer in [{}, {}].",
+                html_escape(t),
+                settings::Settings::MAX_CONCURRENT_MIN,
+                settings::Settings::MAX_CONCURRENT_MAX,
+            )
+        }
+    };
+    let Some(n) = parsed else {
+        tg.send_message_kb_html(msg.chat.id, &invalid_msg(token), Value::Array(vec![]))
+            .await
+            .ok();
+        return;
+    };
+    if !(settings::Settings::MAX_CONCURRENT_MIN..=settings::Settings::MAX_CONCURRENT_MAX)
+        .contains(&n)
+    {
+        tg.send_message_kb_html(msg.chat.id, &invalid_msg(token), Value::Array(vec![]))
+            .await
+            .ok();
+        return;
+    }
+
+    // Persist trước, rồi resize — fail DB → không đổi runtime (tránh drift).
+    if let Err(e) = store.set_max_concurrent(n) {
+        tg.send_message(
+            msg.chat.id,
+            &i18n::db_error(alang, &e.to_string()),
+            Some(msg.message_id),
+        )
+        .await
+        .ok();
+        return;
+    }
+    let (old, new) = controller.set_max(n as usize);
+    tracing::info!(old, new, admin = admin_id, "max_concurrent resized via /set_max_concurrent");
+    let line = if vi {
+        format!(
+            "✅ <b>max_concurrent</b>: <code>{}</code> → <code>{}</code>\n\
+             Job đang chạy không bị dừng. Khi giảm, slot rút dần lúc worker trả permit.",
+            old, new,
+        )
+    } else {
+        format!(
+            "✅ <b>max_concurrent</b>: <code>{}</code> → <code>{}</code>\n\
+             In-flight jobs are not killed. On shrink, slots are drained as workers release.",
+            old, new,
+        )
+    };
+    tg.send_message_kb_html(msg.chat.id, &line, Value::Array(vec![]))
         .await
         .ok();
 }
@@ -4261,10 +4584,12 @@ async fn send_help(
              /notify_remove — xóa kênh thông báo\n\
              /notify_test — gửi test message tới kênh thông báo\n\
              /proxy_login_set &lt;line(s)&gt; — đặt POOL login proxy (multi-line, mỗi job pick random)\n\
+             /proxy_login_add &lt;line(s)&gt; — thêm vào POOL login proxy (bỏ dòng trùng)\n\
              /proxy_login_remove — xóa toàn bộ pool login proxy\n\
              /proxy_check_user &lt;@user | id&gt; — xem RAW pool proxy của user (kèm credential) + LIVE check\n\
              /set_max_per_user &lt;1-10&gt; — đổi default toàn cục số tiến trình/user (no-arg để xem)\n\
-             /set_user_limit &lt;@user | id&gt; [n|default] — set/show/xóa override quota per-user\n"
+             /set_user_limit &lt;@user | id&gt; [n|default] — set/show/xóa override quota per-user\n\
+             /set_max_concurrent &lt;n&gt; — đổi tổng worker concurrent toàn bot (no-arg để xem)\n"
         } else {
             "\n<b>Admin:</b>\n\
              /notify &lt;message&gt; — broadcast to all users (keeps formatting)\n\
@@ -4278,10 +4603,12 @@ async fn send_help(
              /notify_remove — remove notify channel\n\
              /notify_test — send a test message to notify channel\n\
              /proxy_login_set &lt;line(s)&gt; — set login proxy POOL (multi-line, each job picks random)\n\
+             /proxy_login_add &lt;line(s)&gt; — append lines to POOL (dedupe against existing)\n\
              /proxy_login_remove — remove the entire login proxy pool\n\
              /proxy_check_user &lt;@user | id&gt; — show RAW user proxy pool (with credentials) + LIVE check\n\
              /set_max_per_user &lt;1-10&gt; — change global default concurrent processes/user (no-arg to view)\n\
-             /set_user_limit &lt;@user | id&gt; [n|default] — set/show/clear per-user quota override\n"
+             /set_user_limit &lt;@user | id&gt; [n|default] — set/show/clear per-user quota override\n\
+             /set_max_concurrent &lt;n&gt; — set bot-wide concurrent worker count (no-arg to view)\n"
         });
     }
 
